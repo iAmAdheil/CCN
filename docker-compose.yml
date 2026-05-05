@@ -1,0 +1,49 @@
+# Docker Compose for the Socket-WebRTC platform.
+#
+# Today this only runs coturn (the TURN/STUN relay). The signaling server and
+# frontend still run natively via npm — they'll move into this compose file in
+# a later pass.
+#
+# Quick start:
+#   1. cp .env.example .env
+#   2. openssl rand -hex 32   # paste into TURN_SECRET in .env
+#   3. docker compose up -d coturn
+#   4. Set the same TURN_SECRET / TURN_HOST in backend/.env, then start the
+#      signaling server. The /turn-credentials endpoint will mint creds.
+#
+# Production deployment notes are in the comments below.
+
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: socket-webrtc-coturn
+    restart: unless-stopped
+
+    # On a Linux production host, prefer host networking — UDP relay through
+    # docker-proxy is slow and flakey. To switch:
+    #   - uncomment `network_mode: host`
+    #   - delete the entire `ports:` block below
+    # network_mode: host
+
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "5349:5349/tcp"
+      - "5349:5349/udp"
+      # Relay range — MUST match min-port/max-port in turnserver.conf.
+      - "49160-49200:49160-49200/udp"
+
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+
+    # Static settings live in turnserver.conf; secrets/host-specific bits are
+    # injected here so a single config file works across environments.
+    command:
+      - "-c"
+      - "/etc/coturn/turnserver.conf"
+      - "--static-auth-secret=${TURN_SECRET:?TURN_SECRET not set in .env}"
+      - "--realm=${TURN_REALM:-socket-webrtc.local}"
+      # external-ip tells coturn what IP to advertise in relay candidates.
+      # For local dev: 127.0.0.1. For LAN testing: your machine's LAN IP.
+      # For cloud: your VM's public IP.
+      - "--external-ip=${EXTERNAL_IP:-127.0.0.1}"

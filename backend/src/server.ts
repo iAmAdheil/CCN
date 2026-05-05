@@ -5,6 +5,7 @@ import https from 'https';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
@@ -124,6 +125,59 @@ app.get('/', (req, res) => {
   })
 });
 
+// Always-available STUN servers. TURN is added on top when TURN_SECRET is set.
+const STUN_SERVERS: { urls: string }[] = (process.env.STUN_URLS ?? 'stun:stun.l.google.com:19302')
+  .split(',')
+  .map((u) => ({ urls: u.trim() }))
+  .filter((s) => s.urls.length > 0);
+
+// Issue short-lived TURN credentials using the standard "TURN REST API" pattern:
+//   username   = <expiry-unix-timestamp>:<userId>
+//   credential = base64(HMAC-SHA1(TURN_SECRET, username))
+// Coturn validates by recomputing the same HMAC, so the secret never travels
+// over the wire. If TURN_SECRET / TURN_HOST aren't configured we still respond
+// 200 with STUN-only — the app stays usable, just without NAT relay fallback.
+app.get('/turn-credentials', (req, res) => {
+  const secret = process.env.TURN_SECRET;
+  const host = process.env.TURN_HOST;
+
+  if (!secret || !host) {
+    return res.json({ iceServers: STUN_SERVERS, ttl: 0, expiresAt: 0, turnAvailable: false });
+  }
+
+  const requestedTtl = Number(req.query.ttl);
+  const ttl = Number.isFinite(requestedTtl) && requestedTtl > 0
+    ? Math.min(Math.floor(requestedTtl), 24 * 60 * 60)
+    : 5 * 60;
+
+  const expiry = Math.floor(Date.now() / 1000) + ttl;
+  const userId = typeof req.query.userId === 'string' && req.query.userId.length > 0
+    ? req.query.userId.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64)
+    : 'guest';
+  const username = `${expiry}:${userId}`;
+  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+
+  const port = process.env.TURN_PORT ?? '3478';
+  const tlsPort = process.env.TURN_TLS_PORT ?? '5349';
+  const turnUrls = [
+    `turn:${host}:${port}?transport=udp`,
+    `turn:${host}:${port}?transport=tcp`,
+  ];
+  if (process.env.TURN_TLS === 'true') {
+    turnUrls.push(`turns:${host}:${tlsPort}?transport=tcp`);
+  }
+
+  res.json({
+    iceServers: [
+      ...STUN_SERVERS,
+      { urls: turnUrls, username, credential },
+    ],
+    ttl,
+    expiresAt: expiry * 1000,
+    turnAvailable: true,
+  });
+});
+
 app.post('/mail/send', async (req, res) => {
   try {
     const { to, subject, text, html } = req.body || {};
@@ -227,14 +281,50 @@ io.of("/").on("connection", async (socket) => {
     });
   });
 
-  socket.on("chat message", async (data: { roomName: string, text: string }) => {
-    const payload = {
+  // Returns true iff `socket` and `target` are in at least one shared room.
+  // Used to gate per-recipient relays so the signaling server can't be turned
+  // into an open DM channel between unrelated users.
+  const shareRoom = (target: ReturnType<typeof io.sockets.sockets.get>) => {
+    if (!target) return false;
+    for (const r of socket.rooms) {
+      if (r !== socket.id && target.rooms.has(r)) return true;
+    }
+    return false;
+  };
+
+  // ECDH public-key exchange between two peers in a shared room. The server
+  // is a stateless courier — it never stores keys and cannot derive the
+  // shared secret without a private key (which never leaves the browser).
+  socket.on("pubkey-exchange", (data: { to: string; pubKey: string }) => {
+    if (!data || typeof data.to !== "string" || typeof data.pubKey !== "string") return;
+    if (data.pubKey.length === 0 || data.pubKey.length > 200) return;
+    const target = io.sockets.sockets.get(data.to);
+    if (!shareRoom(target)) return;
+    target!.emit("peer-pubkey", { from: socket.id, pubKey: data.pubKey });
+  });
+
+  // Chat is sent peer-to-peer over RTCDataChannels. The server only relays a
+  // message to a specific recipient when the sender's DataChannel to that peer
+  // isn't open yet (e.g. a peer that joined moments ago). The payload is
+  // already AES-GCM-encrypted under a per-pair ECDH-derived key — the server
+  // sees opaque bytes only. Receivers dedupe by msgId, so it's safe for a
+  // message to arrive via both DC and relay.
+  socket.on("chat-relay", (data: { to: string; msgId: string; iv: string; ct: string; ts: number }) => {
+    if (!data || typeof data.to !== "string" || typeof data.msgId !== "string") return;
+    if (typeof data.iv !== "string" || typeof data.ct !== "string") return;
+    if (data.iv.length === 0 || data.iv.length > 64) return;
+    // Generous upper bound — base64 of (4096 bytes of plaintext + 16-byte AES-GCM tag).
+    if (data.ct.length === 0 || data.ct.length > 8192) return;
+    const target = io.sockets.sockets.get(data.to);
+    if (!shareRoom(target)) return;
+    target!.emit("chat message", {
+      msgId: data.msgId,
       id: socket.id,
       username: socket.handshake.auth.username,
-      text: data.text,
-      ts: Date.now(),
-    };
-    io.to(data.roomName).emit("chat message", payload);
+      iv: data.iv,
+      ct: data.ct,
+      ts: typeof data.ts === "number" ? data.ts : Date.now(),
+    });
   });
 
   socket.on("leave room", async (roomName: string) => {

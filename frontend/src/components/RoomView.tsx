@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   Video,
   Mic,
@@ -11,6 +11,10 @@ import {
   Send,
   Paperclip,
   Download,
+  ShieldCheck,
+  Lock,
+  AlertTriangle,
+  ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,6 +26,11 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import NetworkDiagnostics from "./NetworkDiagnostics";
+import { safetyNumber } from "@/lib/chatCrypto";
+import type { ArpSession } from "@/lib/arpSession";
+import ARPVisualizer from "./ARPVisualizer";
 
 interface RoomViewProps {
   roomName: string;
@@ -29,13 +38,20 @@ interface RoomViewProps {
   participants: RoomUser[];
   onLeave: () => void;
   streamRef: React.MutableRefObject<MediaStream | null>;
+  pcsRef: React.MutableRefObject<Record<string, RTCPeerConnection>>;
   onVideoToggle: (enabled: boolean) => void;
   onAudioToggle: (enabled: boolean) => void;
   chatMessages: ChatMessage[];
   onSendChat: (text: string) => void;
   onSendFile: (file: File) => Promise<void> | void;
   uploadProgress: number;
-  receivedFiles: Array<{ name: string; size: number; url: string }>;
+  receivedFiles: Array<{ name: string; size: number; url: string; error?: string }>;
+  myPubKey: string | null;
+  peerPubKeys: Record<string, string>;
+  arpSessionsRef: React.MutableRefObject<Record<string, ArpSession>>;
+  // Bumps when ARP sessions are added/removed — re-renders the visualizer's
+  // peer dropdown so it stays in sync with the ref.
+  arpChannelTick: number;
 }
 
 const RoomView = ({
@@ -44,6 +60,7 @@ const RoomView = ({
   participants,
   onLeave,
   streamRef,
+  pcsRef,
   onVideoToggle,
   onAudioToggle,
   chatMessages,
@@ -51,6 +68,10 @@ const RoomView = ({
   onSendFile,
   uploadProgress,
   receivedFiles,
+  myPubKey,
+  peerPubKeys,
+  arpSessionsRef,
+  arpChannelTick,
 }: RoomViewProps) => {
   const [micMuted, setMicMuted] = useState(false);
   const [isVideo, setIsVideo] = useState(true);
@@ -63,8 +84,51 @@ const RoomView = ({
   const [sendingMail, setSendingMail] = useState(false);
   const [mailNotice, setMailNotice] = useState<string | null>(null);
   const [emailOpen, setEmailOpen] = useState(false);
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [safetyNumbers, setSafetyNumbers] = useState<Record<string, string>>({});
+  // Verification is session-local — keyed by the peer's pubkey, so if a peer
+  // regenerates their keypair the badge resets (correct: it's a different
+  // identity now and needs to be re-verified).
+  const [verifiedKeys, setVerifiedKeys] = useState<Record<string, boolean>>({});
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Remote participants only — we don't show a safety number for ourselves.
+  const remotePeers = useMemo(
+    () => participants.filter((p) => p.username !== username),
+    [participants, username]
+  );
+
+  // Recompute safety numbers when our pubkey or any peer's pubkey changes.
+  // This is a SHA-256 over both pubkeys — effectively free even at 100s of
+  // calls, so no need to memoize per-peer.
+  useEffect(() => {
+    if (!myPubKey) {
+      setSafetyNumbers({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const next: Record<string, string> = {};
+      for (const [peerId, theirPub] of Object.entries(peerPubKeys)) {
+        try {
+          next[peerId] = await safetyNumber(myPubKey, theirPub);
+        } catch {
+          // ignore — next render will retry
+        }
+      }
+      if (!cancelled) setSafetyNumbers(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [myPubKey, peerPubKeys]);
+
+  const encryptedCount = remotePeers.filter((p) => peerPubKeys[p.id]).length;
+  const verifiedCount = remotePeers.filter((p) => {
+    const k = peerPubKeys[p.id];
+    return k && verifiedKeys[k];
+  }).length;
 
   const getGridCols = (count: number) => {
     if (count === 1) return "grid-cols-1";
@@ -177,6 +241,15 @@ const RoomView = ({
             </div>
             <div className="flex items-center gap-3">
               <ThemeToggle />
+              <NetworkDiagnostics
+                pcsRef={pcsRef}
+                participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}
+              />
+              <ARPVisualizer
+                arpSessionsRef={arpSessionsRef}
+                participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}
+                channelTick={arpChannelTick}
+              />
               <Button variant="outline" size="sm" className="gap-2">
                 <Settings className="w-4 h-4" />
                 <span className="hidden sm:inline">Settings</span>
@@ -195,6 +268,75 @@ const RoomView = ({
                         <SheetTitle>Room chat</SheetTitle>
                       </SheetHeader>
                     </div>
+                    <div className="px-4 pt-3 border-b pb-3">
+                      <Collapsible open={verifyOpen} onOpenChange={setVerifyOpen}>
+                        <CollapsibleTrigger asChild>
+                          <Button variant="ghost" size="sm" className="w-full justify-between h-8 px-2">
+                            <span className="flex items-center gap-2 text-xs">
+                              <Lock className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                              <span className="font-medium">End-to-end encrypted</span>
+                              <span className="text-muted-foreground">
+                                · {encryptedCount}/{remotePeers.length} peers · {verifiedCount} verified
+                              </span>
+                            </span>
+                            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${verifyOpen ? "rotate-180" : ""}`} />
+                          </Button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-3">
+                          <p className="text-[11px] text-muted-foreground mb-2 leading-snug">
+                            Compare each peer's safety number with theirs out-of-band (in person, by
+                            phone). If they match, no one is intercepting your keys.
+                          </p>
+                          <div className="space-y-2">
+                            {remotePeers.length === 0 && (
+                              <div className="text-xs text-muted-foreground">No remote peers in this room.</div>
+                            )}
+                            {remotePeers.map((p) => {
+                              const theirKey = peerPubKeys[p.id];
+                              const sn = theirKey ? safetyNumbers[p.id] : undefined;
+                              const verified = theirKey ? !!verifiedKeys[theirKey] : false;
+                              return (
+                                <div key={p.id} className="rounded-md border border-border/50 px-3 py-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-sm font-medium truncate">{p.username}</div>
+                                    {!theirKey ? (
+                                      <Badge variant="outline" className="gap-1 text-[10px] border-amber-500/30 text-amber-600 dark:text-amber-400">
+                                        <AlertTriangle className="w-3 h-3" /> Awaiting key
+                                      </Badge>
+                                    ) : verified ? (
+                                      <Badge variant="outline" className="gap-1 text-[10px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                                        <ShieldCheck className="w-3 h-3" /> Verified
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="gap-1 text-[10px] border-blue-500/30 text-blue-600 dark:text-blue-400">
+                                        <Lock className="w-3 h-3" /> Encrypted
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  {sn && (
+                                    <>
+                                      <div className="mt-1.5 font-mono text-[11px] tracking-wider break-all text-muted-foreground">
+                                        {sn}
+                                      </div>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="mt-1.5 h-6 px-2 text-[11px]"
+                                        onClick={() =>
+                                          setVerifiedKeys((prev) => ({ ...prev, [theirKey!]: !prev[theirKey!] }))
+                                        }
+                                      >
+                                        {verified ? "Unmark verified" : "Mark as verified"}
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </div>
                     <ScrollArea className="flex-1 p-4">
                       <div className="space-y-3">
                         {chatMessages.map((m) => (
@@ -212,11 +354,15 @@ const RoomView = ({
                           <div className="pt-4 space-y-2">
                             <div className="text-xs font-medium text-muted-foreground">Received files</div>
                             {receivedFiles.map((f, idx) => (
-                              <div key={`${f.url}-${idx}`} className="flex items-center justify-between gap-2 text-sm">
+                              <div key={`${f.url || "err"}-${idx}`} className="flex items-center justify-between gap-2 text-sm">
                                 <div className="truncate" title={`${f.name} • ${(f.size/1024/1024).toFixed(2)} MB`}>{f.name}</div>
-                                <a href={f.url} download={f.name} className="inline-flex items-center gap-1 text-primary hover:underline">
-                                  <Download className="w-4 h-4" /> Download
-                                </a>
+                                {f.error ? (
+                                  <span className="text-xs text-destructive" title={f.error}>{f.error}</span>
+                                ) : (
+                                  <a href={f.url} download={f.name} className="inline-flex items-center gap-1 text-primary hover:underline">
+                                    <Download className="w-4 h-4" /> Download
+                                  </a>
+                                )}
                               </div>
                             ))}
                           </div>

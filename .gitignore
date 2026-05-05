@@ -1,3 +1,4 @@
 .DS_Store
 localhost+1-key.pem
 localhost+1.pem
+.env
