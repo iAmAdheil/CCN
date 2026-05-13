@@ -28,6 +28,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { Progress } from "@/components/ui/progress";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import NetworkDiagnostics from "./NetworkDiagnostics";
+import DriveSheet from "./DriveSheet";
+import type { DriveApi } from "@/hooks/useDrive";
 import { safetyNumber } from "@/lib/chatCrypto";
 import type { ArpSession } from "@/lib/arpSession";
 import ARPVisualizer from "./ARPVisualizer";
@@ -58,6 +60,8 @@ interface RoomViewProps {
     producers: number;
     consumers: number;
   };
+  drive?: DriveApi;
+  selfPeerId?: string | null;
 }
 
 const RoomView = ({
@@ -79,6 +83,8 @@ const RoomView = ({
   arpSessionsRef,
   arpChannelTick,
   sfu,
+  drive,
+  selfPeerId,
 }: RoomViewProps) => {
   const [micMuted, setMicMuted] = useState(false);
   const [isVideo, setIsVideo] = useState(true);
@@ -253,6 +259,13 @@ const RoomView = ({
                 participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}
                 sfu={sfu}
               />
+              {drive && (
+                <DriveSheet
+                  drive={drive}
+                  selfPeerId={selfPeerId ?? null}
+                  roomMode={sfu?.mode ?? "mesh"}
+                />
+              )}
               <ARPVisualizer
                 arpSessionsRef={arpSessionsRef}
                 participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}

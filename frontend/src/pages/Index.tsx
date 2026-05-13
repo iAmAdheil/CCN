@@ -13,6 +13,7 @@ import {
 } from "@/lib/chatCrypto";
 import { ArpSession } from "@/lib/arpSession";
 import { useSfu, type RoomMode } from "@/hooks/useSfu";
+import { useDrive } from "@/hooks/useDrive";
 
 type AppState = "username" | "lobby" | "room";
 
@@ -146,6 +147,11 @@ const Index = () => {
     localStream: localStreamState,
   });
   const roomMode: RoomMode = sfu.mode;
+  const [socketIdState, setSocketIdState] = useState<string | null>(null);
+  const drive = useDrive({
+    selfPeerId: socketIdState,
+    dcsRef,
+  });
   // Mirror in a ref so the socket-listener closures (registered once at mount)
   // can read the latest mode without being rebuilt on each mode change.
   const roomModeRef = useRef<RoomMode>('mesh');
@@ -311,6 +317,12 @@ const Index = () => {
         },
       });
       setSocketState(socketRef.current);
+      socketRef.current.on('connect', () => {
+        setSocketIdState(socketRef.current?.id ?? null);
+      });
+      socketRef.current.on('disconnect', () => {
+        setSocketIdState(null);
+      });
 
       socketRef.current?.on("fetch active rooms", (roomsStr) => {
         const rooms = JSON.parse(roomsStr) as Room[];
@@ -884,6 +896,8 @@ const Index = () => {
       if (!entry) return;
       delete incomingRef.current[key];
       void finalizeIncomingFile(entry);
+    } else if (msg.type === "drive" && msg.payload && typeof msg.payload === "object") {
+      drive.ingestRemote(remoteId, msg.payload);
     } else if (msg.type === "chat-enc") {
       if (typeof msg.msgId !== "string" || typeof msg.iv !== "string" || typeof msg.ct !== "string") return;
       const entry = peerKeysRef.current[remoteId];
@@ -1088,6 +1102,8 @@ const Index = () => {
             producers: sfu.producers,
             consumers: sfu.consumers,
           }}
+          drive={drive}
+          selfPeerId={socketIdState}
         />
       )}
     </>
