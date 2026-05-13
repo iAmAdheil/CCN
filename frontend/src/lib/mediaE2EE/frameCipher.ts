@@ -36,8 +36,17 @@ export class FrameCipher {
     this.sendCounter = 0n;
   }
 
+  clearKey(): void {
+    this.key = null;
+    this.sendCounter = 0n;
+  }
+
   hasKey(): boolean {
     return this.key !== null;
+  }
+
+  currentKeyId(): number | null {
+    return this.key?.keyId ?? null;
   }
 
   // Encrypt an outgoing frame. Returns the new payload (IV || ciphertext).

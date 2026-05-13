@@ -14,6 +14,8 @@ import {
 import { ArpSession } from "@/lib/arpSession";
 import { useSfu, type RoomMode } from "@/hooks/useSfu";
 import { useDrive } from "@/hooks/useDrive";
+import { useMediaE2EE } from "@/hooks/useMediaE2EE";
+import type { MediaKeyEnvelope } from "@/lib/mediaE2EE/groupKey";
 
 type AppState = "username" | "lobby" | "room";
 
@@ -141,10 +143,16 @@ const Index = () => {
   // so binding these on day one is safe.
   const [socketState, setSocketState] = useState<Socket | null>(null);
   const [localStreamState, setLocalStreamState] = useState<MediaStream | null>(null);
+  const mediaE2EE = useMediaE2EE();
+  // Ref mirrors the API so closures registered once at mount can read the
+  // latest cipher/keyId state without being re-registered.
+  const mediaE2EERef = useRef(mediaE2EE);
+  useEffect(() => { mediaE2EERef.current = mediaE2EE; }, [mediaE2EE]);
   const sfu = useSfu({
     socket: socketState,
     roomId: currentRoomName || null,
     localStream: localStreamState,
+    e2eeCipher: mediaE2EE.cipher,
   });
   const roomMode: RoomMode = sfu.mode;
   const [socketIdState, setSocketIdState] = useState<string | null>(null);
@@ -158,6 +166,19 @@ const Index = () => {
   useEffect(() => {
     roomModeRef.current = roomMode;
   }, [roomMode]);
+
+  // Grace timer for the room media key. After joining, give peers ~3s to
+  // respond to media-key-request messages; if none of them have a key
+  // (we're the first peer or the only peer), generate one locally.
+  useEffect(() => {
+    if (!currentRoomName || mediaE2EE.hasKey) return;
+    const handle = window.setTimeout(() => {
+      if (!mediaE2EERef.current.hasKey) {
+        void mediaE2EERef.current.generateLocal();
+      }
+    }, 3000);
+    return () => window.clearTimeout(handle);
+  }, [currentRoomName, mediaE2EE.hasKey]);
 
   // In SFU mode, useSfu owns the remote MediaStream lifecycle. Mirror its
   // map into roomUsers so the existing video grid keeps working unchanged.
@@ -195,6 +216,22 @@ const Index = () => {
     }
     prevModeRef.current = roomMode;
   }, [roomMode]);
+
+  // DC-only send for control messages that don't fit the chat-relay envelope
+  // shape (e.g. media-key-request, media-key-enc). Returns true if the message
+  // went out, false otherwise. Callers handle the false case by retrying later.
+  const sendDcOrRelay = useCallback((peerId: string, obj: unknown): boolean => {
+    const dc = dcsRef.current[peerId];
+    if (dc && dc.readyState === "open") {
+      try {
+        dc.send(JSON.stringify(obj));
+        return true;
+      } catch (e) {
+        console.warn("DC send failed for", peerId, e);
+      }
+    }
+    return false;
+  }, []);
 
   const ensureLocalStream = useCallback(async () => {
     if (streamRef.current) {
@@ -481,6 +518,17 @@ const Index = () => {
             peerKeysRef.current[data.from] = { theirPubKeyB64: data.pubKey, sharedKey };
             setPeerPubKeys((prev) => ({ ...prev, [data.from]: data.pubKey }));
             void flushPendingChats(data.from);
+            // If we don't yet hold the room's media key, ask this peer for
+            // it now that we have a shared chat key to unwrap with. The peer
+            // will only respond if they have one — first peer in the room
+            // sees nothing back and falls through to the grace-timer below
+            // to generate locally.
+            if (!mediaE2EERef.current.hasKey) {
+              // Tiny delay so the DC has a chance to open if it isn't yet.
+              setTimeout(() => {
+                sendDcOrRelay(data.from, { type: "media-key-request" });
+              }, 200);
+            }
           } catch (e) {
             console.warn("Failed to derive shared key with peer", data.from, e);
           }
@@ -593,7 +641,7 @@ const Index = () => {
     } else if (socketRef.current === null && appState !== "username") {
       startListening();
     }
-  }, [addChatMessage, appState, ensureLocalStream, ensureRtcConfig, flushPendingChats, username]);
+  }, [addChatMessage, appState, ensureLocalStream, ensureRtcConfig, flushPendingChats, sendDcOrRelay, username]);
 
   const cleanupPeerConnections = useCallback(() => {
     Object.values(pcsRef.current).forEach((pc) => {
@@ -743,6 +791,7 @@ const Index = () => {
     setUploadProgress(0);
     setReceivedFiles([]);
     setCurrentRoomName("");
+    mediaE2EERef.current.reset();
     setAppState("lobby");
   }, [cleanupPeerConnections, currentRoomName, stopLocalStream]);
 
@@ -767,6 +816,7 @@ const Index = () => {
     setReceivedFiles([]);
     setCurrentRoomName("");
     setUsername("");
+    mediaE2EERef.current.reset();
     setAppState("username");
 
     if (socketRef.current) {
@@ -898,6 +948,32 @@ const Index = () => {
       void finalizeIncomingFile(entry);
     } else if (msg.type === "drive" && msg.payload && typeof msg.payload === "object") {
       drive.ingestRemote(remoteId, msg.payload);
+    } else if (msg.type === "media-key-request") {
+      // Peer just joined and needs the room's media key. Wrap our current
+      // key under the per-pair chat AES-GCM key — server can't see it.
+      const entry = peerKeysRef.current[remoteId];
+      if (!entry) return;
+      void (async () => {
+        try {
+          const envelope = await mediaE2EE.wrapForPeer(entry.sharedKey);
+          if (envelope) sendDcOrRelay(remoteId, envelope);
+        } catch (e) {
+          console.warn("Failed to wrap media key for", remoteId, e);
+        }
+      })();
+    } else if (msg.type === "media-key-enc") {
+      const entry = peerKeysRef.current[remoteId];
+      if (!entry) return;
+      if (typeof msg.iv !== "string" || typeof msg.ct !== "string" || typeof msg.keyId !== "number") return;
+      const env: MediaKeyEnvelope = {
+        type: "media-key-enc",
+        keyId: msg.keyId,
+        iv: msg.iv,
+        ct: msg.ct,
+      };
+      void mediaE2EE.adoptFromEnvelope(env, entry.sharedKey).catch((e) => {
+        console.warn("Failed to adopt media key from", remoteId, e);
+      });
     } else if (msg.type === "chat-enc") {
       if (typeof msg.msgId !== "string" || typeof msg.iv !== "string" || typeof msg.ct !== "string") return;
       const entry = peerKeysRef.current[remoteId];
@@ -1104,6 +1180,7 @@ const Index = () => {
           }}
           drive={drive}
           selfPeerId={socketIdState}
+          mediaE2EE={{ hasKey: mediaE2EE.hasKey, keyId: mediaE2EE.keyId }}
         />
       )}
     </>

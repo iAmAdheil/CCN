@@ -21,6 +21,12 @@ import {
   produceTrack,
   type RemoteProducer,
 } from '@/lib/sfuClient';
+import type { FrameCipher } from '@/lib/mediaE2EE/frameCipher';
+import {
+  applyReceiverTransform,
+  applySenderTransform,
+  getUnderlyingPc,
+} from '@/lib/mediaE2EE/transforms';
 
 export type RoomMode = 'mesh' | 'sfu';
 
@@ -35,9 +41,16 @@ interface UseSfuOptions {
   socket: Socket | null;
   roomId: string | null;
   localStream: MediaStream | null;
+  // Optional E2EE cipher. When provided, every produced sender and every
+  // consumed receiver gets the corresponding transform attached so the SFU
+  // sees opaque bytes only. The cipher's keyId is read at decrypt time so
+  // a mid-session key rotation is transparent to the transform setup.
+  e2eeCipher?: FrameCipher;
 }
 
-export function useSfu({ socket, roomId, localStream }: UseSfuOptions): SfuStats {
+export function useSfu({ socket, roomId, localStream, e2eeCipher }: UseSfuOptions): SfuStats {
+  const e2eeCipherRef = useRef<FrameCipher | undefined>(e2eeCipher);
+  useEffect(() => { e2eeCipherRef.current = e2eeCipher; }, [e2eeCipher]);
   const [mode, setMode] = useState<RoomMode>('mesh');
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [producerCount, setProducerCount] = useState(0);
@@ -96,6 +109,10 @@ export function useSfu({ socket, roomId, localStream }: UseSfuOptions): SfuStats
           const producer = await produceTrack(sendTransport, track);
           producersRef.current.set(producer.id, producer);
           setProducerCount(producersRef.current.size);
+          // Attach the E2EE encode transform to the underlying RTCRtpSender
+          // so the SFU never sees plaintext frames. Falls back silently in
+          // browsers that lack RTCRtpSender.transform.
+          attachSenderTransform(sendTransport, track);
           producer.on('trackended', () => {
             void closeProducer(socket, producer.id).catch(() => undefined);
             producersRef.current.delete(producer.id);
@@ -161,6 +178,32 @@ export function useSfu({ socket, roomId, localStream }: UseSfuOptions): SfuStats
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, roomId, mode]);
 
+  function attachSenderTransform(sendTransport: Transport, track: MediaStreamTrack) {
+    const cipher = e2eeCipherRef.current;
+    if (!cipher) return;
+    const pc = getUnderlyingPc(sendTransport);
+    if (!pc) {
+      console.warn('[useSfu] could not locate underlying PC to attach sender transform');
+      return;
+    }
+    const sender = pc.getSenders().find((s) => s.track === track);
+    if (!sender) return;
+    applySenderTransform(sender, cipher);
+  }
+
+  function attachReceiverTransform(recvTransport: Transport, track: MediaStreamTrack) {
+    const cipher = e2eeCipherRef.current;
+    if (!cipher) return;
+    const pc = getUnderlyingPc(recvTransport);
+    if (!pc) {
+      console.warn('[useSfu] could not locate underlying PC to attach receiver transform');
+      return;
+    }
+    const receiver = pc.getReceivers().find((r) => r.track === track);
+    if (!receiver) return;
+    applyReceiverTransform(receiver, cipher, () => cipher.currentKeyId() ?? 0);
+  }
+
   function removeTrackFromStream(socketId: string, track: MediaStreamTrack) {
     setRemoteStreams((prev) => {
       const stream = prev[socketId];
@@ -185,6 +228,10 @@ export function useSfu({ socket, roomId, localStream }: UseSfuOptions): SfuStats
       consumersRef.current.set(consumer.id, consumer);
       consumerOwnersRef.current.set(consumer.id, remote.producerSocketId);
       setConsumerCount(consumersRef.current.size);
+      // Attach the E2EE decode transform so the receiver gets plaintext
+      // back. The transform reads the current cipher key at frame time, so
+      // a mid-session key rotation works without reattaching.
+      attachReceiverTransform(recvTransport, consumer.track);
       setRemoteStreams((prev) => {
         const existing = prev[remote.producerSocketId];
         const stream = existing ?? new MediaStream();

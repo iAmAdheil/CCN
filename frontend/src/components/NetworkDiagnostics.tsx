@@ -44,6 +44,10 @@ interface NetworkDiagnosticsProps {
     producers: number;
     consumers: number;
   };
+  mediaE2EE?: {
+    hasKey: boolean;
+    keyId: number | null;
+  };
 }
 
 // Heuristic per-peer media bitrate used for the SFU/mesh comparison. Real
@@ -56,7 +60,10 @@ function SfuComparisonCard({
   peers,
   producers,
   consumers,
-}: NonNullable<NetworkDiagnosticsProps["sfu"]>) {
+  mediaE2EE,
+}: NonNullable<NetworkDiagnosticsProps["sfu"]> & {
+  mediaE2EE?: NetworkDiagnosticsProps["mediaE2EE"];
+}) {
   // Peers here is the count of *other* participants in the room. In mesh mode
   // each peer maintains an RTCPeerConnection with every other peer and
   // uplinks one copy per peer. In SFU each peer uplinks exactly once.
@@ -122,6 +129,28 @@ function SfuComparisonCard({
         Upstream estimate uses {ESTIMATED_BITRATE_KBPS} Kbps per stream (typical
         cam + mic). Live per-stream bitrates land with Tier 3 observability.
       </div>
+      {mediaE2EE && (
+        <>
+          <Separator />
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Media E2EE</div>
+            {mediaE2EE.hasKey ? (
+              <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+                keyed{mediaE2EE.keyId !== null ? ` · 0x${mediaE2EE.keyId.toString(16).padStart(8, "0")}` : ""}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400">
+                waiting for room key
+              </Badge>
+            )}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {mediaE2EE.hasKey
+              ? "AES-GCM per-frame encryption applied; the SFU forwards opaque bytes."
+              : "Frames suppressed until the room media key arrives via DC."}
+          </div>
+        </>
+      )}
     </Card>
   );
 }
@@ -355,7 +384,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-const NetworkDiagnostics = ({ pcsRef, participants, sfu }: NetworkDiagnosticsProps) => {
+const NetworkDiagnostics = ({ pcsRef, participants, sfu, mediaE2EE }: NetworkDiagnosticsProps) => {
   const [open, setOpen] = useState(false);
   const stats = useWebRTCStats(pcsRef, { enabled: open, intervalMs: 1000 });
 
@@ -386,7 +415,7 @@ const NetworkDiagnostics = ({ pcsRef, participants, sfu }: NetworkDiagnosticsPro
           </div>
           <ScrollArea className="flex-1 p-4">
             <div className="space-y-3">
-              {sfu && <SfuComparisonCard {...sfu} />}
+              {sfu && <SfuComparisonCard {...sfu} mediaE2EE={mediaE2EE} />}
               {sfu?.mode === "mesh" && remotePeers.length === 0 && (
                 <div className="text-sm text-muted-foreground">No active peer connections.</div>
               )}

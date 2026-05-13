@@ -62,6 +62,10 @@ interface RoomViewProps {
   };
   drive?: DriveApi;
   selfPeerId?: string | null;
+  mediaE2EE?: {
+    hasKey: boolean;
+    keyId: number | null;
+  };
 }
 
 const RoomView = ({
@@ -85,6 +89,7 @@ const RoomView = ({
   sfu,
   drive,
   selfPeerId,
+  mediaE2EE,
 }: RoomViewProps) => {
   const [micMuted, setMicMuted] = useState(false);
   const [isVideo, setIsVideo] = useState(true);
@@ -258,6 +263,7 @@ const RoomView = ({
                 pcsRef={pcsRef}
                 participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}
                 sfu={sfu}
+                mediaE2EE={mediaE2EE}
               />
               {drive && (
                 <DriveSheet
