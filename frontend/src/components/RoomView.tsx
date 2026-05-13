@@ -52,6 +52,12 @@ interface RoomViewProps {
   // Bumps when ARP sessions are added/removed — re-renders the visualizer's
   // peer dropdown so it stays in sync with the ref.
   arpChannelTick: number;
+  sfu?: {
+    mode: "mesh" | "sfu";
+    peers: number;
+    producers: number;
+    consumers: number;
+  };
 }
 
 const RoomView = ({
@@ -72,6 +78,7 @@ const RoomView = ({
   peerPubKeys,
   arpSessionsRef,
   arpChannelTick,
+  sfu,
 }: RoomViewProps) => {
   const [micMuted, setMicMuted] = useState(false);
   const [isVideo, setIsVideo] = useState(true);
@@ -244,6 +251,7 @@ const RoomView = ({
               <NetworkDiagnostics
                 pcsRef={pcsRef}
                 participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}
+                sfu={sfu}
               />
               <ARPVisualizer
                 arpSessionsRef={arpSessionsRef}

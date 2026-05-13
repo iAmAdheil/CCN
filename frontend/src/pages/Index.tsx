@@ -12,6 +12,7 @@ import {
   type ChatKeypair,
 } from "@/lib/chatCrypto";
 import { ArpSession } from "@/lib/arpSession";
+import { useSfu, type RoomMode } from "@/hooks/useSfu";
 
 type AppState = "username" | "lobby" | "room";
 
@@ -134,6 +135,61 @@ const Index = () => {
   const [myPubKey, setMyPubKey] = useState<string | null>(null);
   const [peerPubKeys, setPeerPubKeys] = useState<Record<string, string>>({});
 
+  // SFU integration. Hook state mirrors socketRef/streamRef so the hook can
+  // react to their initial assignment. The hook is a no-op while mode='mesh',
+  // so binding these on day one is safe.
+  const [socketState, setSocketState] = useState<Socket | null>(null);
+  const [localStreamState, setLocalStreamState] = useState<MediaStream | null>(null);
+  const sfu = useSfu({
+    socket: socketState,
+    roomId: currentRoomName || null,
+    localStream: localStreamState,
+  });
+  const roomMode: RoomMode = sfu.mode;
+  // Mirror in a ref so the socket-listener closures (registered once at mount)
+  // can read the latest mode without being rebuilt on each mode change.
+  const roomModeRef = useRef<RoomMode>('mesh');
+  useEffect(() => {
+    roomModeRef.current = roomMode;
+  }, [roomMode]);
+
+  // In SFU mode, useSfu owns the remote MediaStream lifecycle. Mirror its
+  // map into roomUsers so the existing video grid keeps working unchanged.
+  useEffect(() => {
+    if (roomMode !== 'sfu') return;
+    setRoomUsers((prev) =>
+      prev.map((u) => {
+        const stream = sfu.remoteStreams[u.id];
+        return stream && u.videoStream !== stream ? { ...u, videoStream: stream } : u;
+      })
+    );
+  }, [roomMode, sfu.remoteStreams]);
+
+  // On the mesh -> SFU upgrade, tear down every mesh RTCPeerConnection and
+  // its data channels. The local-stream uplink and remote video paths move
+  // to mediasoup; chat falls back to the server's `chat-relay` courier
+  // (still E2EE — server only sees ciphertext); file-transfer/ARP DCs are a
+  // known v1 casualty when the room exceeds the mesh threshold.
+  const prevModeRef = useRef<RoomMode>('mesh');
+  useEffect(() => {
+    if (prevModeRef.current === 'mesh' && roomMode === 'sfu') {
+      Object.values(pcsRef.current).forEach((pc) => {
+        try { pc.close(); } catch { /* already closed */ }
+      });
+      pcsRef.current = {};
+      dcsRef.current = {};
+      Object.values(arpSessionsRef.current).forEach((s) => s.destroy());
+      arpSessionsRef.current = {};
+      arpDcsRef.current = {};
+      setArpChannelTick((t) => t + 1);
+      // Drop stale remote streams so SFU's freshly-arrived ones replace them.
+      setRoomUsers((prev) =>
+        prev.map((u) => (u.id === socketRef.current?.id ? u : { ...u, videoStream: null }))
+      );
+    }
+    prevModeRef.current = roomMode;
+  }, [roomMode]);
+
   const ensureLocalStream = useCallback(async () => {
     if (streamRef.current) {
       return streamRef.current;
@@ -144,6 +200,7 @@ const Index = () => {
         audio: true,
       });
       streamRef.current = stream;
+      setLocalStreamState(stream);
       return stream;
     } catch (error) {
       console.error("Error accessing user media", error);
@@ -253,6 +310,7 @@ const Index = () => {
           username: username,
         },
       });
+      setSocketState(socketRef.current);
 
       socketRef.current?.on("fetch active rooms", (roomsStr) => {
         const rooms = JSON.parse(roomsStr) as Room[];
@@ -340,21 +398,30 @@ const Index = () => {
           }
         }
 
-        for (const user of users) {
-          console.log("sending an offer to:", user.id);
-          const pc = createPC(user.id, true);
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socketRef.current?.emit("offer", {
-            to: user.id,
-            offer: offer,
-          });
+        // Skip mesh peer connections when the room is already in SFU mode.
+        // useSfu handles producing local tracks + consuming remote producers.
+        if (roomModeRef.current === 'mesh') {
+          for (const user of users) {
+            console.log("sending an offer to:", user.id);
+            const pc = createPC(user.id, true);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socketRef.current?.emit("offer", {
+              to: user.id,
+              offer: offer,
+            });
+          }
         }
       });
 
       socketRef.current?.on(
         "offer",
         async (data: { from: string; offer: RTCSessionDescriptionInit }) => {
+          if (roomModeRef.current !== 'mesh') {
+            // Stale mesh offer from a peer that hasn't transitioned to SFU
+            // yet. Ignore — SFU mode handles media via the router.
+            return;
+          }
           console.log("received an offer from:", data.from);
           try {
             await ensureLocalStream();
@@ -1015,6 +1082,12 @@ const Index = () => {
           peerPubKeys={peerPubKeys}
           arpSessionsRef={arpSessionsRef}
           arpChannelTick={arpChannelTick}
+          sfu={{
+            mode: roomMode,
+            peers: Math.max(0, roomUsers.length - 1),
+            producers: sfu.producers,
+            consumers: sfu.consumers,
+          }}
         />
       )}
     </>

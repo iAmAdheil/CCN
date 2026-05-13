@@ -9,6 +9,41 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
+import { registerSfuHandlers } from './sfu/handlers.js';
+import { modeForSize, type RoomMode } from './sfu/mode.js';
+
+// Per-room mode. Derived from peer count but kept in a map so we can emit
+// transitions (mesh -> sfu and back) exactly when the count crosses the
+// threshold, not on every join/leave.
+const roomMode = new Map<string, RoomMode>();
+
+function roomSize(roomName: string): number {
+  return io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
+}
+
+// Mode is one-way ratchet: once a room reaches SFU, it stays SFU until the
+// last peer leaves. The bidirectional case (downgrading mid-session) is
+// solvable but doubles the orchestration complexity (every peer would have
+// to rebuild mesh PCs in lockstep). For a first cut the demo is cleaner —
+// and the bandwidth-comparison story still works because we measure at the
+// up-crossing.
+function reconcileMode(roomName: string): RoomMode {
+  const size = roomSize(roomName);
+  const prev = roomMode.get(roomName);
+  if (size === 0) {
+    roomMode.delete(roomName);
+    return 'mesh';
+  }
+  const naive = modeForSize(size);
+  const next: RoomMode = prev === 'sfu' ? 'sfu' : naive;
+  if (prev !== next) {
+    roomMode.set(roomName, next);
+    if (prev !== undefined) {
+      io.to(roomName).emit('room-mode', { roomName, mode: next, size });
+    }
+  }
+  return next;
+}
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -204,8 +239,12 @@ io.of("/").on("connection", async (socket) => {
     audioEnabled: true
   };
 
+  registerSfuHandlers(io, socket);
+
   socket.on("join room", async (roomName: string) => {
     await socket.join(roomName);
+    const mode = reconcileMode(roomName);
+    socket.emit('room-mode', { roomName, mode, size: roomSize(roomName) });
     const rooms = await getAllRooms();
     io.except(roomName).emit("fetch active rooms", JSON.stringify(rooms));
 
@@ -335,6 +374,7 @@ io.of("/").on("connection", async (socket) => {
     if (socket.rooms.has(roomName)) {
       socket.to(roomName).emit("remove room user", socket.id);
       await socket.leave(roomName);
+      reconcileMode(roomName);
     }
 
     const rooms = await getAllRooms();
@@ -345,6 +385,10 @@ io.of("/").on("connection", async (socket) => {
     for (const roomName of socket.rooms) {
       if (roomName === socket.id) continue;
       socket.to(roomName).emit("remove room user", socket.id);
+      // Recompute *after* the socket is removed from the room. Socket.io
+      // performs the actual removal between disconnecting and disconnect,
+      // so defer the reconcile by a tick.
+      setImmediate(() => reconcileMode(roomName));
     }
   });
 

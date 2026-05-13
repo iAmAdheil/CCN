@@ -38,6 +38,92 @@ import {
 interface NetworkDiagnosticsProps {
   pcsRef: MutableRefObject<Record<string, RTCPeerConnection>>;
   participants: Array<{ id: string; username: string }>;
+  sfu?: {
+    mode: "mesh" | "sfu";
+    peers: number;
+    producers: number;
+    consumers: number;
+  };
+}
+
+// Heuristic per-peer media bitrate used for the SFU/mesh comparison. Real
+// measurements would come from getStats() on each Producer/Consumer; this
+// estimate is sufficient to make the O(N) vs O(1) story for the demo.
+const ESTIMATED_BITRATE_KBPS = 600 /* video */ + 32 /* audio */;
+
+function SfuComparisonCard({
+  mode,
+  peers,
+  producers,
+  consumers,
+}: NonNullable<NetworkDiagnosticsProps["sfu"]>) {
+  // Peers here is the count of *other* participants in the room. In mesh mode
+  // each peer maintains an RTCPeerConnection with every other peer and
+  // uplinks one copy per peer. In SFU each peer uplinks exactly once.
+  const meshUpKbps = peers * ESTIMATED_BITRATE_KBPS;
+  const sfuUpKbps = peers > 0 ? ESTIMATED_BITRATE_KBPS : 0;
+  const savingsPct = meshUpKbps > 0 ? Math.round(((meshUpKbps - sfuUpKbps) / meshUpKbps) * 100) : 0;
+  const isSfu = mode === "sfu";
+  return (
+    <Card className="p-4 space-y-3 border-primary/40">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-semibold flex items-center gap-2">
+            Transport mode
+            <Badge
+              variant="outline"
+              className={
+                isSfu
+                  ? "border-blue-500/40 text-blue-600 dark:text-blue-400 uppercase text-[10px]"
+                  : "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 uppercase text-[10px]"
+              }
+            >
+              {mode}
+            </Badge>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            {isSfu ? "Router forwards media — uplink is O(1) per peer." : "Full mesh — uplink is O(N) per peer."}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Peers</div>
+          <div className="font-mono text-lg">{peers}</div>
+        </div>
+      </div>
+      <Separator />
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Your upstream</div>
+          <div className="font-mono text-sm">
+            {isSfu ? formatBitrate(sfuUpKbps * 1000) : formatBitrate(meshUpKbps * 1000)}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {isSfu ? "1× video+audio" : `${peers}× video+audio`}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {isSfu ? "Mesh would have cost" : "SFU would cost"}
+          </div>
+          <div className="font-mono text-sm">
+            {isSfu ? formatBitrate(meshUpKbps * 1000) : formatBitrate(sfuUpKbps * 1000)}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {savingsPct > 0 ? `−${savingsPct}% via SFU` : "—"}
+          </div>
+        </div>
+      </div>
+      <Separator />
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <Stat label="Producers" value={String(producers)} />
+        <Stat label="Consumers" value={String(consumers)} />
+      </div>
+      <div className="text-[10px] text-muted-foreground">
+        Upstream estimate uses {ESTIMATED_BITRATE_KBPS} Kbps per stream (typical
+        cam + mic). Live per-stream bitrates land with Tier 3 observability.
+      </div>
+    </Card>
+  );
 }
 
 const candidateTypeColor: Record<CandidateType, string> = {
@@ -269,11 +355,13 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-const NetworkDiagnostics = ({ pcsRef, participants }: NetworkDiagnosticsProps) => {
+const NetworkDiagnostics = ({ pcsRef, participants, sfu }: NetworkDiagnosticsProps) => {
   const [open, setOpen] = useState(false);
   const stats = useWebRTCStats(pcsRef, { enabled: open, intervalMs: 1000 });
 
-  // Show one card per remote peer (anyone with a peer connection).
+  // Show one card per remote peer that has an active mesh PC. In SFU mode
+  // there are no mesh PCs, so this list is empty — the SfuComparisonCard
+  // carries the diagnostics narrative instead.
   const remotePeers = participants.filter((p) => pcsRef.current[p.id]);
 
   return (
@@ -298,7 +386,8 @@ const NetworkDiagnostics = ({ pcsRef, participants }: NetworkDiagnosticsProps) =
           </div>
           <ScrollArea className="flex-1 p-4">
             <div className="space-y-3">
-              {remotePeers.length === 0 && (
+              {sfu && <SfuComparisonCard {...sfu} />}
+              {sfu?.mode === "mesh" && remotePeers.length === 0 && (
                 <div className="text-sm text-muted-foreground">No active peer connections.</div>
               )}
               {remotePeers.map((p) => (

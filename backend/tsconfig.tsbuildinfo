@@ -1,1 +1,1 @@
-{"root":["./src/server.ts"],"version":"5.9.3"}
+{"root":["./src/server.ts","./src/sfu/codecs.ts","./src/sfu/handlers.ts","./src/sfu/mode.ts","./src/sfu/rooms.ts","./src/sfu/session.ts","./src/sfu/transport.ts","./src/sfu/worker.ts"],"version":"5.9.3"}
