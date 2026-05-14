@@ -21,7 +21,8 @@
     "mediasoup": "^3.19.22",
     "nodemailer": "^7.0.10",
     "socket.io": "^4.8.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
