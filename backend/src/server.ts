@@ -173,6 +173,13 @@ const STUN_SERVERS: { urls: string }[] = (process.env.STUN_URLS ?? 'stun:stun.l.
 // over the wire. If TURN_SECRET / TURN_HOST aren't configured we still respond
 // 200 with STUN-only — the app stays usable, just without NAT relay fallback.
 app.get('/turn-credentials', (req, res) => {
+  const expectedToken = process.env.TURN_CREDENTIALS_TOKEN;
+  if (expectedToken) {
+    const auth = req.headers.authorization ?? '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7)
+      : (typeof req.query.token === 'string' ? req.query.token : '');
+    if (token !== expectedToken) return res.status(401).json({ error: 'unauthorized' });
+  }
   const secret = process.env.TURN_SECRET;
   const host = process.env.TURN_HOST;
 
@@ -214,6 +221,12 @@ app.get('/turn-credentials', (req, res) => {
 });
 
 app.post('/mail/send', async (req, res) => {
+  const expectedToken = process.env.MAIL_TOKEN;
+  if (expectedToken) {
+    const auth = req.headers.authorization ?? '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (token !== expectedToken) return res.status(401).json({ error: 'unauthorized' });
+  }
   try {
     const { to, subject, text, html } = req.body || {};
     if (!to || !subject || (!text && !html)) {

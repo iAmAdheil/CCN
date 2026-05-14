@@ -24,7 +24,7 @@ let inFlight: Promise<RTCConfiguration> | null = null;
 function signalUrl(): string {
   return (
     (import.meta as unknown as { env?: { VITE_SIGNAL_URL?: string } }).env?.VITE_SIGNAL_URL
-    ?? `http://${window.location.hostname}:3000`
+    ?? `${window.location.protocol}//${window.location.hostname}:3000`
   );
 }
 

@@ -33,7 +33,8 @@ export class FrameCipher {
 
   setKey(key: FrameCipherKey): void {
     this.key = key;
-    this.sendCounter = 0n;
+    // Random start so peers sharing the same room key never reuse the same (key, IV) pair.
+    this.sendCounter = crypto.getRandomValues(new BigUint64Array(1))[0]!;
   }
 
   clearKey(): void {

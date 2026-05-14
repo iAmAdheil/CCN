@@ -97,5 +97,9 @@ export async function verifyManifest(manifest: SignedManifest): Promise<boolean>
     return false;
   }
   const bytes = new TextEncoder().encode(canonicalJson(body));
-  return verifyBytes(pub, bytes, b64ToBytes(signatureB64));
+  try {
+    return await verifyBytes(pub, bytes, b64ToBytes(signatureB64));
+  } catch {
+    return false;
+  }
 }

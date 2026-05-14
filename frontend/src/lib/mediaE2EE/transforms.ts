@@ -71,7 +71,7 @@ function makeDecodeTransform(
 // see plaintext (acceptable for the demo when running in Chromium).
 export function applySenderTransform(sender: RTCRtpSender, cipher: FrameCipher): boolean {
   const s = sender as RTCRtpSender & { transform?: TransformStream<EncodedFrame, EncodedFrame> | null };
-  if (typeof (s as { transform?: unknown }).transform === 'undefined' && !('createEncodedStreams' in s)) {
+  if (typeof (s as { transform?: unknown }).transform === 'undefined') {
     return false;
   }
   try {
@@ -89,7 +89,7 @@ export function applyReceiverTransform(
   getKeyId: () => number,
 ): boolean {
   const r = receiver as RTCRtpReceiver & { transform?: TransformStream<EncodedFrame, EncodedFrame> | null };
-  if (typeof (r as { transform?: unknown }).transform === 'undefined' && !('createEncodedStreams' in r)) {
+  if (typeof (r as { transform?: unknown }).transform === 'undefined') {
     return false;
   }
   try {

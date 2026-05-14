@@ -52,8 +52,13 @@ export function registerSfuHandlers(io: Server, socket: Socket): void {
         const router = await getOrCreateRouter(data.roomId);
         const transport = await createWebRtcTransport(router);
         const session = ensureSession(socket.id, data.roomId);
-        if (data.direction === 'send') session.sendTransport = transport;
-        else session.recvTransport = transport;
+        if (data.direction === 'send') {
+          session.sendTransport?.close();
+          session.sendTransport = transport;
+        } else {
+          session.recvTransport?.close();
+          session.recvTransport = transport;
+        }
         ack({ ok: true, data: describeTransport(transport) });
       } catch (err) {
         ack({ ok: false, error: (err as Error).message });
@@ -224,6 +229,14 @@ export function registerSfuHandlers(io: Server, socket: Socket): void {
       ack({ ok: true, data: { producers } });
     },
   );
+
+  socket.on('leave room', async (roomName: string) => {
+    const session = getSession(socket.id);
+    if (session?.roomId === roomName) {
+      closeSession(socket.id);
+      await closeRouterIfEmpty(roomName, () => !roomHasSessions(roomName));
+    }
+  });
 
   socket.on('disconnect', async () => {
     const session = getSession(socket.id);

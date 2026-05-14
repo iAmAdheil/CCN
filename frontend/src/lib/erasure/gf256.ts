@@ -33,8 +33,8 @@ export function mul(a: number, b: number): number {
 }
 
 export function div(a: number, b: number): number {
-  if (a === 0) return 0;
   if (b === 0) throw new Error('GF256: divide by zero');
+  if (a === 0) return 0;
   return EXP[(LOG[a] + 255 - LOG[b]) % 255];
 }
 

@@ -7,7 +7,10 @@ let workerPromise: Promise<Worker> | null = null;
 
 export function getWorker(): Promise<Worker> {
   if (workerPromise) return workerPromise;
-  workerPromise = createWorker();
+  workerPromise = createWorker().catch((err) => {
+    workerPromise = null;
+    throw err;
+  });
   return workerPromise;
 }
 

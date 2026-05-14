@@ -15,7 +15,7 @@
 
 services:
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.6
     container_name: socket-webrtc-coturn
     restart: unless-stopped
 

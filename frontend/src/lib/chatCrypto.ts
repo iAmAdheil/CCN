@@ -41,7 +41,7 @@ export interface EncryptedBlob {
 export async function generateChatKeypair(): Promise<ChatKeypair> {
   const kp = await crypto.subtle.generateKey(
     ECDH_PARAMS,
-    true, // extractable so we can export the public key — private is never exported in code
+    false, // private key non-extractable; public key is always exportable in WebCrypto
     ["deriveBits", "deriveKey"]
   );
   const rawPub = await crypto.subtle.exportKey("raw", kp.publicKey);

@@ -108,7 +108,7 @@ const ARPVisualizer = ({ arpSessionsRef, participants, channelTick }: ARPVisuali
     }
     setHistory([]);
     chartStartRef.current = performance.now();
-    lastBytesAckedRef.current = 0;
+    lastBytesAckedRef.current = arpSessionsRef.current[selectedPeer]?.snapshot().sender.bytesAcked ?? 0;
     lastSampleAtRef.current = 0;
   }, [selectedPeer]);
 

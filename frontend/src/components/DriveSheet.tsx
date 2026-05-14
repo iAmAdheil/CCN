@@ -152,7 +152,7 @@ const DriveSheet = ({ drive, selfPeerId, roomMode }: DriveSheetProps) => {
                 )}
                 <div className="text-[10px] text-muted-foreground">
                   Files are sealed with a per-file AES-GCM key, sharded into
-                  14 pieces, distributed across {Math.max(0, Object.keys(drive.manifests).length)} peers,
+                  14 pieces, distributed across the room's peers,
                   and indexed by a signed manifest broadcast to the room.
                 </div>
               </Card>

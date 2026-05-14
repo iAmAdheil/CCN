@@ -8,8 +8,9 @@
 // their media paths.
 export type RoomMode = 'mesh' | 'sfu';
 
-export const MESH_MAX = Number(process.env.SFU_MESH_MAX ?? 4);
+const _parsedMax = Number(process.env.SFU_MESH_MAX ?? 4);
+export const MESH_MAX = Number.isFinite(_parsedMax) && _parsedMax > 0 ? Math.floor(_parsedMax) : 4;
 
 export function modeForSize(size: number): RoomMode {
-  return size > MESH_MAX ? 'sfu' : 'mesh';
+  return size >= MESH_MAX ? 'sfu' : 'mesh';
 }

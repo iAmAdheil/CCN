@@ -52,8 +52,8 @@ export function useMediaE2EE(): MediaE2EEApi {
   const applyState = useCallback(
     async (state: MediaKeyState) => {
       if (stateRef.current && stateRef.current.keyId === state.keyId) return;
-      stateRef.current = state;
       const cryptoKey = await importMediaKey(state.rawKey);
+      stateRef.current = state;
       cipher.setKey({ keyId: state.keyId, cryptoKey });
       setKeyId(state.keyId);
     },
