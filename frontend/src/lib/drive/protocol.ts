@@ -8,8 +8,17 @@
 // driveClient.ts demultiplexes based on this field.
 
 import type { SignedManifest } from './manifest.js';
+import type { DhtMessage } from '../dht/protocol.js';
 
 export type DriveMessage =
+  // DHT messages share the chat DC with drive — we wrap them under one
+  // discriminated union so the dispatcher in useDrive only has one
+  // ingestRemote path. Internally the DhtMessage is forwarded to the
+  // KademliaNode handler.
+  | { op: 'drive:dht'; payload: DhtMessage }
+  | LegacyDriveMessage;
+
+type LegacyDriveMessage =
   // Uploader -> holder: "would you store shard X for me?"
   | { op: 'drive:offer'; fileId: string; index: number; size: number; hashB64: string }
   // Holder -> uploader: response to an offer.

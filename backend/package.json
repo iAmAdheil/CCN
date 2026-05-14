@@ -4,7 +4,8 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "tsc -b && node dist/server.js"
   },
   "keywords": [],
@@ -13,17 +14,22 @@
   "description": "",
   "dependencies": {
     "@types/express": "^5.0.5",
+    "@types/jsonwebtoken": "^9.0.10",
     "axios": "^1.13.1",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.3",
     "mediasoup": "^3.19.22",
     "nodemailer": "^7.0.10",
+    "prom-client": "^15.1.3",
     "socket.io": "^4.8.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
     "@types/nodemailer": "^7.0.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "vitest": "^4.1.6"
   }
 }

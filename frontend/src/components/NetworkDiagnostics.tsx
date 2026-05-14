@@ -34,6 +34,8 @@ import {
   type CandidateType,
   type PeerStats,
 } from "@/hooks/useWebRTCStats";
+import type { ConnectionHealth } from "@/hooks/useConnectionHealth";
+import type { AbrSnapshot } from "@/lib/abr/abr";
 
 interface NetworkDiagnosticsProps {
   pcsRef: MutableRefObject<Record<string, RTCPeerConnection>>;
@@ -43,11 +45,161 @@ interface NetworkDiagnosticsProps {
     peers: number;
     producers: number;
     consumers: number;
+    abr?: AbrSnapshot | null;
   };
   mediaE2EE?: {
     hasKey: boolean;
     keyId: number | null;
   };
+  connectionHealth?: ConnectionHealth;
+}
+
+function AbrCard({ abr }: { abr: AbrSnapshot }) {
+  const totalTarget = abr.layers.reduce((a, l) => a + (l.active ? l.targetBitrate : 0), 0);
+  const dirArrow = abr.lastChange === "up" ? "▲" : abr.lastChange === "down" ? "▼" : "◆";
+  const dirColor =
+    abr.lastChange === "up"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : abr.lastChange === "down"
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-muted-foreground";
+  return (
+    <Card className="p-4 space-y-3 border-primary/30">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-semibold">Adaptive bitrate · simulcast</div>
+          <div className="text-[11px] text-muted-foreground">
+            AIMD over getStats(). Sender publishes {abr.layers.length} spatial layers; SFU forwards
+            whichever the consumer's downlink supports.
+          </div>
+        </div>
+        <span className={`text-lg font-mono ${dirColor}`} title={`Last decision: ${abr.lastChange}`}>
+          {dirArrow}
+        </span>
+      </div>
+      <Separator />
+      <div className="grid grid-cols-3 gap-3 text-xs">
+        <Stat label="Target" value={formatBitrate(totalTarget)} />
+        <Stat
+          label="Available"
+          value={
+            abr.availableOutgoingBitrate !== null ? formatBitrate(abr.availableOutgoingBitrate) : "—"
+          }
+        />
+        <Stat label="Loss" value={`${abr.packetLossPct.toFixed(2)}%`} />
+      </div>
+      <Separator />
+      <div className="space-y-1.5">
+        {abr.layers.map((l) => {
+          const pctOfTotal = totalTarget > 0 ? Math.round((l.targetBitrate / totalTarget) * 100) : 0;
+          return (
+            <div key={l.rid} className="text-[11px] font-mono flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={`text-[9px] uppercase tracking-wide ${
+                    l.active
+                      ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
+                      : "border-muted text-muted-foreground"
+                  }`}
+                >
+                  {l.rid}
+                </Badge>
+                <span className="text-muted-foreground">{formatBitrate(l.targetBitrate)}</span>
+              </span>
+              <span className="text-muted-foreground">{l.active ? `${pctOfTotal}%` : "off"}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="text-[10px] text-muted-foreground">
+        Observed sender throughput: {formatBitrate(abr.observedOutboundBps)} · {abr.ticks} tick(s).
+      </div>
+    </Card>
+  );
+}
+
+function ConnectionHealthCard({ health }: { health: ConnectionHealth }) {
+  const peers = Object.entries(health.peers);
+  const overallCls =
+    health.overall === "good"
+      ? "border-emerald-500/30"
+      : health.overall === "degraded"
+        ? "border-amber-500/40"
+        : "border-destructive/40";
+  const overallText =
+    health.overall === "good"
+      ? "All paths healthy."
+      : health.overall === "degraded"
+        ? "Reduced quality on some paths — usually transient."
+        : "Active failure on signaling or one+ peer paths; restart in flight.";
+  return (
+    <Card className={`p-4 space-y-3 ${overallCls}`}>
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">Connection health</div>
+        <Badge
+          variant="outline"
+          className={`uppercase text-[10px] ${
+            health.overall === "good"
+              ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+              : health.overall === "degraded"
+                ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                : "border-destructive/40 text-destructive"
+          }`}
+        >
+          {health.overall}
+        </Badge>
+      </div>
+      <div className="text-[11px] text-muted-foreground">{overallText}</div>
+      <Separator />
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <Stat
+          label="Signaling"
+          value={
+            health.socket === "connected"
+              ? "connected"
+              : health.socket === "reconnecting"
+                ? `reconnecting${health.socketAttempt > 0 ? ` (#${health.socketAttempt})` : ""}`
+                : "disconnected"
+          }
+        />
+        <Stat label="DC peers" value={String(peers.length)} />
+      </div>
+      {peers.length > 0 && (
+        <>
+          <Separator />
+          <div className="space-y-1.5 text-[11px]">
+            {peers.map(([id, hb]) => (
+              <div key={id} className="flex items-center justify-between font-mono">
+                <span className="truncate text-muted-foreground" title={id}>
+                  {id.slice(0, 10)}…
+                </span>
+                <span className="flex items-center gap-2">
+                  <span>{hb.rttMs !== null ? `${hb.rttMs.toFixed(0)} ms` : "—"}</span>
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] uppercase tracking-wide ${
+                      hb.status === "healthy"
+                        ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
+                        : hb.status === "stale"
+                          ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                          : "border-destructive/40 text-destructive"
+                    }`}
+                  >
+                    {hb.status}
+                  </Badge>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            DC heartbeat ping every 5s. ICE restart triggers after 3 missed pongs (~15s) or
+            iceconnectionstate=failed/disconnected for 3s.
+          </div>
+        </>
+      )}
+    </Card>
+  );
 }
 
 // Heuristic per-peer media bitrate used for the SFU/mesh comparison. Real
@@ -384,7 +536,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-const NetworkDiagnostics = ({ pcsRef, participants, sfu, mediaE2EE }: NetworkDiagnosticsProps) => {
+const NetworkDiagnostics = ({ pcsRef, participants, sfu, mediaE2EE, connectionHealth }: NetworkDiagnosticsProps) => {
   const [open, setOpen] = useState(false);
   const stats = useWebRTCStats(pcsRef, { enabled: open, intervalMs: 1000 });
 
@@ -415,7 +567,9 @@ const NetworkDiagnostics = ({ pcsRef, participants, sfu, mediaE2EE }: NetworkDia
           </div>
           <ScrollArea className="flex-1 p-4">
             <div className="space-y-3">
+              {connectionHealth && <ConnectionHealthCard health={connectionHealth} />}
               {sfu && <SfuComparisonCard {...sfu} mediaE2EE={mediaE2EE} />}
+              {sfu?.abr && <AbrCard abr={sfu.abr} />}
               {sfu?.mode === "mesh" && remotePeers.length === 0 && (
                 <div className="text-sm text-muted-foreground">No active peer connections.</div>
               )}

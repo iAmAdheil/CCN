@@ -27,6 +27,7 @@ import {
   applySenderTransform,
   getUnderlyingPc,
 } from '@/lib/mediaE2EE/transforms';
+import { AbrController, DEFAULT_LAYERS, type AbrSnapshot } from '@/lib/abr/abr';
 
 export type RoomMode = 'mesh' | 'sfu';
 
@@ -35,6 +36,7 @@ export interface SfuStats {
   producers: number;
   consumers: number;
   remoteStreams: Record<string, MediaStream>;
+  abr: AbrSnapshot | null;
 }
 
 interface UseSfuOptions {
@@ -64,6 +66,11 @@ export function useSfu({ socket, roomId, localStream, e2eeCipher }: UseSfuOption
   // consumerId -> producerSocketId, so consumer-closed events can clean up
   // the stream entry for the right peer.
   const consumerOwnersRef = useRef<Map<string, string>>(new Map());
+  // ABR controller bound to the *video* sender. Audio doesn't get an ABR
+  // loop (Opus is constant-bitrate-ish and the gain isn't worth the
+  // complexity).
+  const abrRef = useRef<AbrController | null>(null);
+  const [abrSnap, setAbrSnap] = useState<AbrSnapshot | null>(null);
 
   // Listen for mode changes from the server.
   useEffect(() => {
@@ -106,13 +113,32 @@ export function useSfu({ socket, roomId, localStream, e2eeCipher }: UseSfuOption
         // sfu:produce path via the transport's `produce` callback.
         for (const track of localStream.getTracks()) {
           if (cancelled) return;
-          const producer = await produceTrack(sendTransport, track);
+          // Video gets simulcast: the client publishes 3 spatial layers and
+          // the SFU forwards whichever the consumer's downlink supports.
+          // Audio is single-stream — Opus already adapts internally and
+          // simulcast adds no value.
+          const isVideo = track.kind === 'video';
+          const produceOpts = isVideo
+            ? {
+                encodings: DEFAULT_LAYERS.map((l) => ({
+                  rid: l.rid,
+                  active: true,
+                  maxBitrate: l.initialMaxBitrate,
+                  scaleResolutionDownBy: l.scaleResolutionDownBy,
+                })),
+                codecOptions: { videoGoogleStartBitrate: 600 },
+              }
+            : undefined;
+          const producer = await produceTrack(sendTransport, track, produceOpts);
           producersRef.current.set(producer.id, producer);
           setProducerCount(producersRef.current.size);
           // Attach the E2EE encode transform to the underlying RTCRtpSender
           // so the SFU never sees plaintext frames. Falls back silently in
           // browsers that lack RTCRtpSender.transform.
           attachSenderTransform(sendTransport, track);
+          // Bind the ABR controller to the video sender. Re-binds replace
+          // any previous controller (start of fresh SFU session).
+          if (isVideo) attachAbr(sendTransport, track);
           producer.on('trackended', () => {
             void closeProducer(socket, producer.id).catch(() => undefined);
             producersRef.current.delete(producer.id);
@@ -191,6 +217,30 @@ export function useSfu({ socket, roomId, localStream, e2eeCipher }: UseSfuOption
     applySenderTransform(sender, cipher);
   }
 
+  function attachAbr(sendTransport: Transport, track: MediaStreamTrack) {
+    const pc = getUnderlyingPc(sendTransport);
+    if (!pc) {
+      console.warn('[useSfu] could not locate underlying PC to attach ABR');
+      return;
+    }
+    const sender = pc.getSenders().find((s) => s.track === track);
+    if (!sender) return;
+    // Tear down any previous controller before installing a fresh one (this
+    // matters across SFU re-entries within the same session).
+    if (abrRef.current) {
+      abrRef.current.stop();
+      abrRef.current = null;
+    }
+    const abr = new AbrController(sender, { intervalMs: 2_000 });
+    abrRef.current = abr;
+    // Re-publish current encoding ladder; produceTrack already passed the
+    // initial encodings so this is a no-op on most paths but defensive against
+    // mediasoup-client variants that strip them.
+    void abr.applyInitialEncodings(true);
+    abr.subscribe(setAbrSnap);
+    abr.start();
+  }
+
   function attachReceiverTransform(recvTransport: Transport, track: MediaStreamTrack) {
     const cipher = e2eeCipherRef.current;
     if (!cipher) return;
@@ -250,6 +300,11 @@ export function useSfu({ socket, roomId, localStream, e2eeCipher }: UseSfuOption
   }
 
   function teardown() {
+    if (abrRef.current) {
+      abrRef.current.stop();
+      abrRef.current = null;
+    }
+    setAbrSnap(null);
     for (const consumer of consumersRef.current.values()) {
       try { consumer.close(); } catch { /* already closed */ }
     }
@@ -277,7 +332,7 @@ export function useSfu({ socket, roomId, localStream, e2eeCipher }: UseSfuOption
   }, [socket, roomId]);
 
   return useMemo(
-    () => ({ mode, producers: producerCount, consumers: consumerCount, remoteStreams }),
-    [mode, producerCount, consumerCount, remoteStreams],
+    () => ({ mode, producers: producerCount, consumers: consumerCount, remoteStreams, abr: abrSnap }),
+    [mode, producerCount, consumerCount, remoteStreams, abrSnap],
   );
 }

@@ -16,6 +16,16 @@ import { useSfu, type RoomMode } from "@/hooks/useSfu";
 import { useDrive } from "@/hooks/useDrive";
 import { useMediaE2EE } from "@/hooks/useMediaE2EE";
 import type { MediaKeyEnvelope } from "@/lib/mediaE2EE/groupKey";
+import { HeartbeatTracker } from "@/lib/resilience/heartbeat";
+import { useConnectionHealth } from "@/hooks/useConnectionHealth";
+import {
+  clearSession,
+  consumeMagicParamFromUrl,
+  loadSession,
+  redeemMagicToken,
+  saveSession,
+  type AuthSession,
+} from "@/lib/authClient";
 
 type AppState = "username" | "lobby" | "room";
 
@@ -95,6 +105,10 @@ export interface ChatMessage {
 const Index = () => {
   const [appState, setAppState] = useState<AppState>("username");
   const [username, setUsername] = useState("");
+  // Auth: persisted session JWT (if any) and an in-flight redeem error
+  // surfaced to UsernameModal.
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => loadSession());
+  const [redeemError, setRedeemError] = useState<string | null>(null);
   const [currentRoomName, setCurrentRoomName] = useState("");
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomUsers, setRoomUsers] = useState<RoomUser[]>([]);
@@ -158,6 +172,17 @@ const Index = () => {
     e2eeCipher: mediaE2EE.cipher,
   });
   const roomMode: RoomMode = sfu.mode;
+  // Heartbeat tracker is created once per session. ICE-restart callback is
+  // late-bound via a ref so the tracker can be created before createPC exists.
+  const restartIceRef = useRef<(peerId: string) => void>(() => {});
+  const heartbeatRef = useRef<HeartbeatTracker | null>(null);
+  if (heartbeatRef.current === null) {
+    heartbeatRef.current = new HeartbeatTracker({
+      intervalMs: 5000,
+      onUnhealthy: (peerId) => restartIceRef.current(peerId),
+    });
+  }
+  const connectionHealth = useConnectionHealth(socketState, heartbeatRef.current);
   const [socketIdState, setSocketIdState] = useState<string | null>(null);
   const drive = useDrive({
     selfPeerId: socketIdState,
@@ -169,6 +194,12 @@ const Index = () => {
   useEffect(() => {
     roomModeRef.current = roomMode;
   }, [roomMode]);
+  // Same trick for the room name — the reconnect handler needs to read the
+  // current room without rebinding on every navigation.
+  const currentRoomNameRef = useRef<string>('');
+  useEffect(() => {
+    currentRoomNameRef.current = currentRoomName;
+  }, [currentRoomName]);
 
   // Grace timer for the room media key. After joining, give peers ~3s to
   // respond to media-key-request messages; if none of them have a key
@@ -324,6 +355,23 @@ const Index = () => {
     [encryptAndDispatchChat]
   );
 
+  // On first mount, look for ?magic=<token> in the URL. If present, redeem
+  // it for a session JWT and stash it. The username modal will pre-fill
+  // the email field from the session.
+  useEffect(() => {
+    const magic = consumeMagicParamFromUrl();
+    if (!magic) return;
+    void (async () => {
+      const result = await redeemMagicToken(magic);
+      if ("error" in result) {
+        setRedeemError(result.error);
+        return;
+      }
+      saveSession(result);
+      setAuthSession(result);
+    })();
+  }, []);
+
   // Pre-warm the ICE config on mount and refresh well before TTL expires.
   useEffect(() => {
     if (!username) return;
@@ -354,14 +402,42 @@ const Index = () => {
       socketRef.current = io(SIGNAL_URL, {
         auth: {
           username: username,
+          // Optional session JWT — backend verifies it via the io middleware
+          // when AUTH_REQUIRED=true. When the auth flow wasn't used, this
+          // is undefined and the server falls through to the legacy guest
+          // path.
+          ...(authSession?.token ? { token: authSession.token } : {}),
         },
         extraHeaders: {
           "ngrok-skip-browser-warning": "true",
         },
+        // Resilient transport: keep retrying with exponential backoff and
+        // ±50% jitter so a server restart doesn't herd every client into
+        // synchronized reconnect storms.
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 10_000,
+        randomizationFactor: 0.5,
+        timeout: 10_000,
       });
       setSocketState(socketRef.current);
+      // Track whether *this* connect is a fresh login or a reconnect, so we
+      // can re-join the room on reconnect without double-joining on first
+      // connect (the user-driven join path handles that case).
+      let hasConnectedOnce = false;
       socketRef.current.on('connect', () => {
         setSocketIdState(socketRef.current?.id ?? null);
+        const isReconnect = hasConnectedOnce;
+        hasConnectedOnce = true;
+        // On reconnect, the server has forgotten our presence — re-emit the
+        // current room (if any) so the room roster repopulates and peers
+        // re-discover us. The reconnect socket has a NEW id, so peers will
+        // see us as a fresh join via add-new-room-user (correct behavior:
+        // stable identity is gated on Tier 2 #9 magic-link auth).
+        if (isReconnect && currentRoomNameRef.current) {
+          socketRef.current?.emit("join room", currentRoomNameRef.current);
+        }
       });
       socketRef.current.on('disconnect', () => {
         setSocketIdState(null);
@@ -493,7 +569,11 @@ const Index = () => {
             // Continue answering without local media
           }
           await ensureRtcConfig();
-          const pc = createPC(data.from, false);
+          // Re-offer path (ICE restart from the offerer): reuse the existing
+          // PC so DCs/transceivers stay attached. Fresh offer path: create a
+          // new PC.
+          const existing = pcsRef.current[data.from];
+          const pc = existing ?? createPC(data.from, false);
           await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
@@ -652,7 +732,7 @@ const Index = () => {
     } else if (socketRef.current === null && appState !== "username") {
       startListening();
     }
-  }, [addChatMessage, appState, ensureLocalStream, ensureRtcConfig, flushPendingChats, sendDcOrRelay, username]);
+  }, [addChatMessage, appState, authSession, ensureLocalStream, ensureRtcConfig, flushPendingChats, sendDcOrRelay, username]);
 
   const cleanupPeerConnections = useCallback(() => {
     Object.values(pcsRef.current).forEach((pc) => {
@@ -763,8 +843,9 @@ const Index = () => {
     };
   }, []);
 
-  const handleUsernameSubmit = useCallback((name: string) => {
+  const handleUsernameSubmit = useCallback((name: string, _email: string | null) => {
     setUsername(name);
+    setRedeemError(null);
     setAppState("lobby");
   }, []);
 
@@ -846,6 +927,10 @@ const Index = () => {
     setCurrentRoomName("");
     setUsername("");
     mediaE2EERef.current.reset();
+    // Clear the auth session too — logout should drop the JWT so the next
+    // login starts fresh. Re-sign-in re-runs the magic-link flow.
+    clearSession();
+    setAuthSession(null);
     setAppState("username");
 
     if (socketRef.current) {
@@ -853,6 +938,42 @@ const Index = () => {
       socketRef.current = null;
     }
   }, [cleanupPeerConnections, currentRoomName, stopLocalStream]);
+
+  // ICE restart: re-emit an offer with `iceRestart: true`, which forces a
+  // fresh ICE gathering pass on both sides. The peer answers normally; the
+  // existing offer/answer/candidate signaling carries the new credentials.
+  // Only the offerer (the side that originally created the PC outbound) is
+  // allowed to drive this — keeps the role dance unambiguous.
+  const restartIceForPeer = useCallback(async (peerId: string) => {
+    const pc = pcsRef.current[peerId];
+    if (!pc) return;
+    try {
+      await ensureRtcConfig();
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      socketRef.current?.emit("offer", { to: peerId, offer });
+    } catch (e) {
+      console.warn("ICE restart failed for", peerId, e);
+    }
+  }, [ensureRtcConfig]);
+
+  // Bind into the heartbeat tracker's onUnhealthy callback.
+  useEffect(() => {
+    restartIceRef.current = (peerId: string) => {
+      void restartIceForPeer(peerId);
+    };
+  }, [restartIceForPeer]);
+
+  // Heartbeat lifecycle: start while in a room, stop on leave. Per-peer
+  // registration happens inside attachDataChannel.
+  useEffect(() => {
+    const tracker = heartbeatRef.current;
+    if (!tracker) return;
+    if (currentRoomName) {
+      tracker.start();
+      return () => tracker.stop();
+    }
+  }, [currentRoomName]);
 
   function createPC(remoteId: string, isOfferer: boolean) {
     const pc = new RTCPeerConnection(getCachedRtcConfig());
@@ -879,6 +1000,40 @@ const Index = () => {
           to: remoteId,
           candidate: ev.candidate,
         });
+      }
+    });
+
+    // ICE-level resilience: when the connection slips into 'disconnected',
+    // give it ~3s to recover on its own (transient NAT rebinds happen all
+    // the time on mobile networks); if it's still bad, kick off an ICE
+    // restart. 'failed' is unrecoverable without a restart so we trigger
+    // immediately. The offerer drives renegotiation; the answerer waits.
+    let iceRecoveryTimer: number | null = null;
+    pc.addEventListener("iceconnectionstatechange", () => {
+      const state = pc.iceConnectionState;
+      if (state === "connected" || state === "completed") {
+        if (iceRecoveryTimer !== null) {
+          window.clearTimeout(iceRecoveryTimer);
+          iceRecoveryTimer = null;
+        }
+        return;
+      }
+      if (state === "disconnected") {
+        if (iceRecoveryTimer !== null) return;
+        iceRecoveryTimer = window.setTimeout(() => {
+          iceRecoveryTimer = null;
+          if (pc.iceConnectionState === "disconnected" && isOfferer) {
+            void restartIceForPeer(remoteId);
+          }
+        }, 3000);
+      } else if (state === "failed") {
+        if (iceRecoveryTimer !== null) {
+          window.clearTimeout(iceRecoveryTimer);
+          iceRecoveryTimer = null;
+        }
+        if (isOfferer) {
+          void restartIceForPeer(remoteId);
+        }
       }
     });
 
@@ -938,10 +1093,26 @@ const Index = () => {
   function attachDataChannel(remoteId: string, dc: RTCDataChannel) {
     dc.binaryType = "arraybuffer";
     dcsRef.current[remoteId] = dc;
+
+    const registerHeartbeat = () => {
+      heartbeatRef.current?.addPeer(remoteId, (obj) => {
+        if (dc.readyState !== "open") return false;
+        try {
+          dc.send(JSON.stringify(obj));
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    };
+    if (dc.readyState === "open") registerHeartbeat();
+    else dc.addEventListener("open", registerHeartbeat);
+
     dc.onclose = () => {
       if (dcsRef.current[remoteId] === dc) {
         delete dcsRef.current[remoteId];
       }
+      heartbeatRef.current?.removePeer(remoteId);
     };
     dc.onmessage = (ev) => {
       try {
@@ -958,6 +1129,17 @@ const Index = () => {
 
   function handleControlFrame(remoteId: string, raw: string) {
     const msg = JSON.parse(raw);
+    // Heartbeat frames are routed first because they're the highest-volume
+    // control frames and need a tight reply path.
+    if (msg.type === "hb-ping") {
+      const pong = heartbeatRef.current?.handlePing(msg);
+      if (pong) sendDcOrRelay(remoteId, pong);
+      return;
+    }
+    if (msg.type === "hb-pong") {
+      heartbeatRef.current?.handlePong(remoteId, msg);
+      return;
+    }
     if (msg.type === "file-meta") {
       const key = `${remoteId}:${msg.id}`;
       incomingRef.current[key] = {
@@ -1170,7 +1352,12 @@ const Index = () => {
   return (
     <>
       {appState === "username" && (
-        <UsernameModal open={true} onSubmit={handleUsernameSubmit} />
+        <UsernameModal
+          open={true}
+          {...(authSession?.email ? { initialEmail: authSession.email } : {})}
+          {...(redeemError !== null ? { redeemError } : {})}
+          onSubmit={handleUsernameSubmit}
+        />
       )}
 
       {appState === "lobby" && (
@@ -1211,10 +1398,12 @@ const Index = () => {
             peers: Math.max(0, roomUsers.length - 1),
             producers: sfu.producers,
             consumers: sfu.consumers,
+            abr: sfu.abr,
           }}
           drive={drive}
           selfPeerId={socketIdState}
           mediaE2EE={{ hasKey: mediaE2EE.hasKey, keyId: mediaE2EE.keyId }}
+          connectionHealth={connectionHealth}
         />
       )}
     </>

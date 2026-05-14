@@ -17,6 +17,8 @@ import { generateUserIdentity, type UserIdentity } from '@/lib/drive/fileCrypto'
 import { PeerDriveStore } from '@/lib/drive/peerStore';
 import type { DriveMessage, Wire } from '@/lib/drive/protocol';
 import type { SignedManifest } from '@/lib/drive/manifest';
+import { KademliaNode } from '@/lib/dht/kademlia';
+import type { DhtMessage, DhtTransport } from '@/lib/dht/protocol';
 
 export interface UseDriveOptions {
   selfPeerId: string | null;
@@ -25,23 +27,44 @@ export interface UseDriveOptions {
   dcsRef: MutableRefObject<Record<string, RTCDataChannel>>;
 }
 
+export interface DhtSnapshot {
+  selfHex: string;
+  handle: string;
+  contacts: Array<{ idHex: string; handle: string; bucket: number }>;
+  storageKeys: string[];
+  bucketSizes: number[];
+}
+
 export interface DriveApi {
   identity: UserIdentity | null;
   ready: boolean;
   manifests: SignedManifest[];
   storeStats: { shards: number; manifests: number; bytes: number };
+  dht: DhtSnapshot | null;
   upload: (file: File, opts?: { onProgress?: (p: UploadProgress) => void }) => Promise<SignedManifest>;
   download: (manifest: SignedManifest) => Promise<{ bytes: Uint8Array; name: string; contentType?: string }>;
   // Called by Index.tsx whenever a DC delivers a drive message.
   ingestRemote: (fromPeerId: string, msg: DriveMessage) => void;
 }
 
+// Stable, transport-agnostic key under which a shard's bytes live in the
+// DHT. The hash domain — `shard:<fileId>:<index>` — buys some isolation
+// from any future non-shard values that share the same DHT.
+function shardKey(fileId: string, index: number): string {
+  return `shard:${fileId}:${index}`;
+}
+
 export function useDrive({ selfPeerId, dcsRef }: UseDriveOptions): DriveApi {
   const [identity, setIdentity] = useState<UserIdentity | null>(null);
   const [manifests, setManifests] = useState<SignedManifest[]>([]);
   const [storeStats, setStoreStats] = useState({ shards: 0, manifests: 0, bytes: 0 });
+  const [dhtSnap, setDhtSnap] = useState<DhtSnapshot | null>(null);
   const storeRef = useRef<PeerDriveStore | null>(null);
   const subscribersRef = useRef<Set<(fromPeerId: string, msg: DriveMessage) => void>>(new Set());
+  const dhtRef = useRef<KademliaNode | null>(null);
+  // DHT message subscribers, kept distinct from drive's own subscribers so
+  // bindHolder doesn't see DHT envelopes.
+  const dhtSubscribersRef = useRef<Set<(from: string, msg: DhtMessage) => void>>(new Set());
 
   if (!storeRef.current) storeRef.current = new PeerDriveStore();
 
@@ -107,6 +130,15 @@ export function useDrive({ selfPeerId, dcsRef }: UseDriveOptions): DriveApi {
     const store = storeRef.current!;
     const unbind = bindHolder(wire, store, {
       onManifest: () => refreshState(),
+      onShardStored: (fileId, index, data) => {
+        // Publish the shard into the DHT so downloaders can find it via
+        // iterative FIND_VALUE instead of a broadcast flood.
+        const node = dhtRef.current;
+        if (!node) return;
+        void node.store(shardKey(fileId, index), data).catch((e) => {
+          console.warn('[drive] dht store failed', e);
+        });
+      },
     });
     refreshState();
     return () => {
@@ -120,9 +152,76 @@ export function useDrive({ selfPeerId, dcsRef }: UseDriveOptions): DriveApi {
     return () => window.clearInterval(handle);
   }, [refreshState]);
 
+  // DHT transport: shares the chat DC with drive; messages are wrapped in
+  // a `drive:dht` envelope so the existing dispatch path can fan them out.
+  const dhtTransport = useMemo<DhtTransport>(() => ({
+    send(toHandle, msg) {
+      const dc = dcsRef.current[toHandle];
+      if (!dc || dc.readyState !== 'open') return false;
+      try {
+        dc.send(JSON.stringify({ type: 'drive', payload: { op: 'drive:dht', payload: msg } }));
+        return true;
+      } catch (err) {
+        console.warn('[dht] dc.send failed for', toHandle, err);
+        return false;
+      }
+    },
+    subscribe(handler) {
+      dhtSubscribersRef.current.add(handler);
+      return () => {
+        dhtSubscribersRef.current.delete(handler);
+      };
+    },
+  }), [dcsRef]);
+
+  // Spin up the Kademlia node once selfPeerId is known. Tear it down and
+  // rebuild on selfPeerId change (e.g. socket reconnect).
+  useEffect(() => {
+    if (!selfPeerId) return;
+    let cancelled = false;
+    void (async () => {
+      const node = await KademliaNode.create(selfPeerId, dhtTransport);
+      if (cancelled) return;
+      node.start();
+      dhtRef.current = node;
+      setDhtSnap(node.snapshot());
+    })();
+    return () => {
+      cancelled = true;
+      dhtRef.current?.stop();
+      dhtRef.current = null;
+      setDhtSnap(null);
+    };
+  }, [selfPeerId, dhtTransport]);
+
+  // Bootstrap the routing table from the current DC roster + refresh
+  // periodically as peers join/leave. Re-runs whenever the DHT node is
+  // (re)created — `dhtReady` flips false→true on creation and true→false
+  // on teardown.
+  const dhtReady = dhtSnap !== null;
+  useEffect(() => {
+    if (!dhtReady) return;
+    const node = dhtRef.current;
+    if (!node) return;
+    const handle = window.setInterval(() => {
+      const peers = Object.entries(dcsRef.current)
+        .filter(([, dc]) => dc.readyState === 'open')
+        .map(([id]) => id);
+      void (async () => {
+        for (const p of peers) await node.addContact(p);
+      })();
+      setDhtSnap(node.snapshot());
+    }, 1500);
+    return () => window.clearInterval(handle);
+  }, [dcsRef, dhtReady]);
+
   // When a remote drive message arrives from the DC layer in Index.tsx,
-  // fan it out to every subscriber.
+  // fan it out to drive subscribers (and to the DHT for dht: envelopes).
   const ingestRemote = useCallback((fromPeerId: string, msg: DriveMessage) => {
+    if (msg.op === 'drive:dht') {
+      for (const handler of dhtSubscribersRef.current) handler(fromPeerId, msg.payload);
+      return;
+    }
     for (const handler of subscribersRef.current) {
       handler(fromPeerId, msg);
     }
@@ -150,6 +249,13 @@ export function useDrive({ selfPeerId, dcsRef }: UseDriveOptions): DriveApi {
         wire,
         store,
         onProgress: options?.onProgress,
+        onShardStored: (fileId, index, data) => {
+          const node = dhtRef.current;
+          if (!node) return;
+          void node.store(shardKey(fileId, index), data).catch((e) => {
+            console.warn('[drive] dht store failed', e);
+          });
+        },
       });
       refreshState();
       return manifest;
@@ -170,6 +276,11 @@ export function useDrive({ selfPeerId, dcsRef }: UseDriveOptions): DriveApi {
         wire,
         store,
         peers,
+        dhtFetch: async (fileId, index) => {
+          const node = dhtRef.current;
+          if (!node) return null;
+          return node.findValue(shardKey(fileId, index));
+        },
       });
       refreshState();
       return result;
@@ -182,6 +293,7 @@ export function useDrive({ selfPeerId, dcsRef }: UseDriveOptions): DriveApi {
     ready: identity !== null,
     manifests,
     storeStats,
+    dht: dhtSnap,
     upload,
     download,
     ingestRemote,
