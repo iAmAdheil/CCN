@@ -4,7 +4,8 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "tsc -b && node dist/server.js"
   },
   "keywords": [],
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^24.10.0",
     "@types/nodemailer": "^7.0.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "vitest": "^4.1.6"
   }
 }
