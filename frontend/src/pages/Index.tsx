@@ -16,6 +16,8 @@ import { useSfu, type RoomMode } from "@/hooks/useSfu";
 import { useDrive } from "@/hooks/useDrive";
 import { useMediaE2EE } from "@/hooks/useMediaE2EE";
 import type { MediaKeyEnvelope } from "@/lib/mediaE2EE/groupKey";
+import { HeartbeatTracker } from "@/lib/resilience/heartbeat";
+import { useConnectionHealth } from "@/hooks/useConnectionHealth";
 
 type AppState = "username" | "lobby" | "room";
 
@@ -158,6 +160,17 @@ const Index = () => {
     e2eeCipher: mediaE2EE.cipher,
   });
   const roomMode: RoomMode = sfu.mode;
+  // Heartbeat tracker is created once per session. ICE-restart callback is
+  // late-bound via a ref so the tracker can be created before createPC exists.
+  const restartIceRef = useRef<(peerId: string) => void>(() => {});
+  const heartbeatRef = useRef<HeartbeatTracker | null>(null);
+  if (heartbeatRef.current === null) {
+    heartbeatRef.current = new HeartbeatTracker({
+      intervalMs: 5000,
+      onUnhealthy: (peerId) => restartIceRef.current(peerId),
+    });
+  }
+  const connectionHealth = useConnectionHealth(socketState, heartbeatRef.current);
   const [socketIdState, setSocketIdState] = useState<string | null>(null);
   const drive = useDrive({
     selfPeerId: socketIdState,
@@ -169,6 +182,12 @@ const Index = () => {
   useEffect(() => {
     roomModeRef.current = roomMode;
   }, [roomMode]);
+  // Same trick for the room name — the reconnect handler needs to read the
+  // current room without rebinding on every navigation.
+  const currentRoomNameRef = useRef<string>('');
+  useEffect(() => {
+    currentRoomNameRef.current = currentRoomName;
+  }, [currentRoomName]);
 
   // Grace timer for the room media key. After joining, give peers ~3s to
   // respond to media-key-request messages; if none of them have a key
@@ -358,10 +377,33 @@ const Index = () => {
         extraHeaders: {
           "ngrok-skip-browser-warning": "true",
         },
+        // Resilient transport: keep retrying with exponential backoff and
+        // ±50% jitter so a server restart doesn't herd every client into
+        // synchronized reconnect storms.
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 10_000,
+        randomizationFactor: 0.5,
+        timeout: 10_000,
       });
       setSocketState(socketRef.current);
+      // Track whether *this* connect is a fresh login or a reconnect, so we
+      // can re-join the room on reconnect without double-joining on first
+      // connect (the user-driven join path handles that case).
+      let hasConnectedOnce = false;
       socketRef.current.on('connect', () => {
         setSocketIdState(socketRef.current?.id ?? null);
+        const isReconnect = hasConnectedOnce;
+        hasConnectedOnce = true;
+        // On reconnect, the server has forgotten our presence — re-emit the
+        // current room (if any) so the room roster repopulates and peers
+        // re-discover us. The reconnect socket has a NEW id, so peers will
+        // see us as a fresh join via add-new-room-user (correct behavior:
+        // stable identity is gated on Tier 2 #9 magic-link auth).
+        if (isReconnect && currentRoomNameRef.current) {
+          socketRef.current?.emit("join room", currentRoomNameRef.current);
+        }
       });
       socketRef.current.on('disconnect', () => {
         setSocketIdState(null);
@@ -493,7 +535,11 @@ const Index = () => {
             // Continue answering without local media
           }
           await ensureRtcConfig();
-          const pc = createPC(data.from, false);
+          // Re-offer path (ICE restart from the offerer): reuse the existing
+          // PC so DCs/transceivers stay attached. Fresh offer path: create a
+          // new PC.
+          const existing = pcsRef.current[data.from];
+          const pc = existing ?? createPC(data.from, false);
           await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
@@ -854,6 +900,42 @@ const Index = () => {
     }
   }, [cleanupPeerConnections, currentRoomName, stopLocalStream]);
 
+  // ICE restart: re-emit an offer with `iceRestart: true`, which forces a
+  // fresh ICE gathering pass on both sides. The peer answers normally; the
+  // existing offer/answer/candidate signaling carries the new credentials.
+  // Only the offerer (the side that originally created the PC outbound) is
+  // allowed to drive this — keeps the role dance unambiguous.
+  const restartIceForPeer = useCallback(async (peerId: string) => {
+    const pc = pcsRef.current[peerId];
+    if (!pc) return;
+    try {
+      await ensureRtcConfig();
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      socketRef.current?.emit("offer", { to: peerId, offer });
+    } catch (e) {
+      console.warn("ICE restart failed for", peerId, e);
+    }
+  }, [ensureRtcConfig]);
+
+  // Bind into the heartbeat tracker's onUnhealthy callback.
+  useEffect(() => {
+    restartIceRef.current = (peerId: string) => {
+      void restartIceForPeer(peerId);
+    };
+  }, [restartIceForPeer]);
+
+  // Heartbeat lifecycle: start while in a room, stop on leave. Per-peer
+  // registration happens inside attachDataChannel.
+  useEffect(() => {
+    const tracker = heartbeatRef.current;
+    if (!tracker) return;
+    if (currentRoomName) {
+      tracker.start();
+      return () => tracker.stop();
+    }
+  }, [currentRoomName]);
+
   function createPC(remoteId: string, isOfferer: boolean) {
     const pc = new RTCPeerConnection(getCachedRtcConfig());
     // receive remote tracks (attach to a video element)
@@ -879,6 +961,40 @@ const Index = () => {
           to: remoteId,
           candidate: ev.candidate,
         });
+      }
+    });
+
+    // ICE-level resilience: when the connection slips into 'disconnected',
+    // give it ~3s to recover on its own (transient NAT rebinds happen all
+    // the time on mobile networks); if it's still bad, kick off an ICE
+    // restart. 'failed' is unrecoverable without a restart so we trigger
+    // immediately. The offerer drives renegotiation; the answerer waits.
+    let iceRecoveryTimer: number | null = null;
+    pc.addEventListener("iceconnectionstatechange", () => {
+      const state = pc.iceConnectionState;
+      if (state === "connected" || state === "completed") {
+        if (iceRecoveryTimer !== null) {
+          window.clearTimeout(iceRecoveryTimer);
+          iceRecoveryTimer = null;
+        }
+        return;
+      }
+      if (state === "disconnected") {
+        if (iceRecoveryTimer !== null) return;
+        iceRecoveryTimer = window.setTimeout(() => {
+          iceRecoveryTimer = null;
+          if (pc.iceConnectionState === "disconnected" && isOfferer) {
+            void restartIceForPeer(remoteId);
+          }
+        }, 3000);
+      } else if (state === "failed") {
+        if (iceRecoveryTimer !== null) {
+          window.clearTimeout(iceRecoveryTimer);
+          iceRecoveryTimer = null;
+        }
+        if (isOfferer) {
+          void restartIceForPeer(remoteId);
+        }
       }
     });
 
@@ -938,10 +1054,26 @@ const Index = () => {
   function attachDataChannel(remoteId: string, dc: RTCDataChannel) {
     dc.binaryType = "arraybuffer";
     dcsRef.current[remoteId] = dc;
+
+    const registerHeartbeat = () => {
+      heartbeatRef.current?.addPeer(remoteId, (obj) => {
+        if (dc.readyState !== "open") return false;
+        try {
+          dc.send(JSON.stringify(obj));
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    };
+    if (dc.readyState === "open") registerHeartbeat();
+    else dc.addEventListener("open", registerHeartbeat);
+
     dc.onclose = () => {
       if (dcsRef.current[remoteId] === dc) {
         delete dcsRef.current[remoteId];
       }
+      heartbeatRef.current?.removePeer(remoteId);
     };
     dc.onmessage = (ev) => {
       try {
@@ -958,6 +1090,17 @@ const Index = () => {
 
   function handleControlFrame(remoteId: string, raw: string) {
     const msg = JSON.parse(raw);
+    // Heartbeat frames are routed first because they're the highest-volume
+    // control frames and need a tight reply path.
+    if (msg.type === "hb-ping") {
+      const pong = heartbeatRef.current?.handlePing(msg);
+      if (pong) sendDcOrRelay(remoteId, pong);
+      return;
+    }
+    if (msg.type === "hb-pong") {
+      heartbeatRef.current?.handlePong(remoteId, msg);
+      return;
+    }
     if (msg.type === "file-meta") {
       const key = `${remoteId}:${msg.id}`;
       incomingRef.current[key] = {
@@ -1215,6 +1358,7 @@ const Index = () => {
           drive={drive}
           selfPeerId={socketIdState}
           mediaE2EE={{ hasKey: mediaE2EE.hasKey, keyId: mediaE2EE.keyId }}
+          connectionHealth={connectionHealth}
         />
       )}
     </>

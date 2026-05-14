@@ -15,6 +15,9 @@ import {
   Lock,
   AlertTriangle,
   ChevronDown,
+  Wifi,
+  WifiOff,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -36,6 +39,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import NetworkDiagnostics from "./NetworkDiagnostics";
 import DriveSheet from "./DriveSheet";
 import type { DriveApi } from "@/hooks/useDrive";
+import type { ConnectionHealth } from "@/hooks/useConnectionHealth";
 import { safetyNumber } from "@/lib/chatCrypto";
 import type { ArpSession } from "@/lib/arpSession";
 import ARPVisualizer from "./ARPVisualizer";
@@ -72,6 +76,57 @@ interface RoomViewProps {
     hasKey: boolean;
     keyId: number | null;
   };
+  connectionHealth?: ConnectionHealth;
+}
+
+function ConnectionHealthPill({ health }: { health: ConnectionHealth }) {
+  const peers = Object.values(health.peers);
+  const peerCount = peers.length;
+  const dead = peers.filter((p) => p.status === "dead").length;
+  const unhealthy = peers.filter((p) => p.status === "unhealthy").length;
+  const stale = peers.filter((p) => p.status === "stale").length;
+  let label: string;
+  let icon: JSX.Element;
+  let cls: string;
+  let title: string;
+
+  if (health.socket === "disconnected") {
+    label = "offline";
+    icon = <WifiOff className="w-3 h-3" />;
+    cls = "border-destructive/40 text-destructive";
+    title = "Signaling socket disconnected — peers may be unreachable.";
+  } else if (health.socket === "reconnecting") {
+    label = health.socketAttempt > 0 ? `reconnecting · #${health.socketAttempt}` : "reconnecting";
+    icon = <Loader2 className="w-3 h-3 animate-spin" />;
+    cls = "border-amber-500/40 text-amber-600 dark:text-amber-400";
+    title = "Lost signaling socket; backing off and retrying.";
+  } else if (health.overall === "bad") {
+    label = `bad · ${dead + unhealthy}/${peerCount}`;
+    icon = <WifiOff className="w-3 h-3" />;
+    cls = "border-destructive/40 text-destructive";
+    title = "One or more peers stopped responding to heartbeats; ICE restart in flight.";
+  } else if (health.overall === "degraded") {
+    label = `degraded · ${stale}/${peerCount}`;
+    icon = <Wifi className="w-3 h-3" />;
+    cls = "border-amber-500/40 text-amber-600 dark:text-amber-400";
+    title = "At least one peer's heartbeat is stale.";
+  } else {
+    label = peerCount > 0 ? `good · ${peerCount}` : "good";
+    icon = <Wifi className="w-3 h-3" />;
+    cls = "border-emerald-500/30 text-emerald-600 dark:text-emerald-400";
+    const rtts = peers.map((p) => p.rttMs).filter((v): v is number => v !== null);
+    const avg = rtts.length > 0 ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null;
+    title = avg !== null
+      ? `Signaling connected; ${peerCount} peer(s) healthy; avg DC RTT ${avg.toFixed(0)} ms.`
+      : "Signaling connected; no DC peers yet.";
+  }
+
+  return (
+    <Badge variant="outline" className={`gap-1.5 text-xs ${cls}`} title={title}>
+      {icon}
+      <span>{label}</span>
+    </Badge>
+  );
 }
 
 const RoomView = ({
@@ -96,6 +151,7 @@ const RoomView = ({
   drive,
   selfPeerId,
   mediaE2EE,
+  connectionHealth,
 }: RoomViewProps) => {
   const [micMuted, setMicMuted] = useState(false);
   const [isVideo, setIsVideo] = useState(true);
@@ -253,10 +309,11 @@ const RoomView = ({
               </div>
               <div>
                 <h1 className="text-base font-semibold">{roomName}</h1>
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
                   <Users className="w-3 h-3" />
                   {participants.length}{" "}
                   {participants.length === 1 ? "person" : "people"}
+                  {connectionHealth && <ConnectionHealthPill health={connectionHealth} />}
                 </div>
               </div>
             </div>
@@ -267,6 +324,7 @@ const RoomView = ({
                 participants={participants.filter((p) => p.username !== username).map((p) => ({ id: p.id, username: p.username }))}
                 sfu={sfu}
                 mediaE2EE={mediaE2EE}
+                connectionHealth={connectionHealth}
               />
               {drive && (
                 <DriveSheet
@@ -283,7 +341,7 @@ const RoomView = ({
               <Button variant="outline" size="sm" className="gap-2">
                 <Settings className="w-4 h-4" />
                 <span className="hidden sm:inline">Settings</span>
-              </Button> */}
+              </Button>
               <Sheet open={chatOpen} onOpenChange={setChatOpen}>
                 <SheetTrigger asChild>
                   <Button variant="ghost" size="sm" className="gap-2">
