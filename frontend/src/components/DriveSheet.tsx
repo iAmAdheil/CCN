@@ -169,6 +169,41 @@ const DriveSheet = ({ drive, selfPeerId, roomMode }: DriveSheetProps) => {
                 </div>
               </Card>
 
+              {drive.dht && (
+                <Card className="p-4 space-y-2 border-primary/30">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-sm">Kademlia DHT</div>
+                    <Badge variant="outline" className="text-[10px] border-primary/40">
+                      k=8 · α=3
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 text-xs">
+                    <Stat label="My ID (prefix)" value={drive.dht.selfHex.slice(0, 10) + "…"} />
+                    <Stat label="Contacts" value={String(drive.dht.contacts.length)} />
+                    <Stat label="Stored keys" value={String(drive.dht.storageKeys.length)} />
+                  </div>
+                  {drive.dht.contacts.length > 0 && (
+                    <div className="text-[10px] font-mono text-muted-foreground space-y-0.5 pt-1">
+                      {drive.dht.contacts.slice(0, 4).map((c) => (
+                        <div key={c.handle} className="flex items-center justify-between">
+                          <span className="truncate" title={c.handle}>
+                            {c.idHex.slice(0, 10)}… ({c.handle.slice(0, 6)}…)
+                          </span>
+                          <span className="text-muted-foreground">b{c.bucket}</span>
+                        </div>
+                      ))}
+                      {drive.dht.contacts.length > 4 && (
+                        <div className="text-muted-foreground">+{drive.dht.contacts.length - 4} more</div>
+                      )}
+                    </div>
+                  )}
+                  <div className="text-[10px] text-muted-foreground">
+                    Shard lookups try iterative FIND_VALUE before falling back to broadcast,
+                    converting O(N) flood into O(log N) routed hops.
+                  </div>
+                </Card>
+              )}
+
               <Separator />
 
               <div className="space-y-2">

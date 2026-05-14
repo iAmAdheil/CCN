@@ -46,6 +46,10 @@ export interface UploadOptions {
   k?: number;
   m?: number;
   onProgress?: (p: UploadProgress) => void;
+  // Optional: invoked once per shard *after* it's been stored (locally or
+  // remotely). useDrive uses this to publish the shard into the DHT so
+  // downloaders can find it without a broadcast.
+  onShardStored?: (fileId: string, index: number, data: Uint8Array) => void;
 }
 
 export interface DownloadOptions {
@@ -57,6 +61,10 @@ export interface DownloadOptions {
   // works, but downloader will time out faster if no one responds.
   peers?: string[];
   onProgress?: (shardsCollected: number, total: number) => void;
+  // Optional DHT lookup. If provided, called BEFORE the broadcast fallback
+  // for each missing shard. Resolving non-null short-circuits the
+  // broadcast.
+  dhtFetch?: (fileId: string, index: number) => Promise<Uint8Array | null>;
 }
 
 // ---------- helpers ----------
@@ -124,6 +132,7 @@ export async function uploadFile(opts: UploadOptions): Promise<SignedManifest> {
       });
       accepted++;
       stored++;
+      opts.onShardStored?.(fileId, index, data);
       opts.onProgress?.({ phase: 'distributing', shardsAccepted: accepted, shardsStored: stored, totalShards });
       return;
     }
@@ -168,6 +177,7 @@ export async function uploadFile(opts: UploadOptions): Promise<SignedManifest> {
         unsub();
         if (msg.ok) {
           stored++;
+          opts.onShardStored?.(fileId, index, data);
           opts.onProgress?.({ phase: 'distributing', shardsAccepted: accepted, shardsStored: stored, totalShards });
           resolve();
         } else {
@@ -258,17 +268,31 @@ export async function downloadFile(opts: DownloadOptions): Promise<{
     if (!collected[i]) needed.push(i);
   }
 
-  await Promise.all(
-    needed.map((index) =>
-      fetchShard(opts.wire, manifest.fileId, index).then((data) => {
-        if (data) {
-          collected[index] = data;
+  const fetchOne = async (index: number) => {
+    // DHT first (iterative FIND_VALUE). If it returns the bytes, we skip
+    // the broadcast — and we get O(log N) hops instead of O(N) flood.
+    if (opts.dhtFetch) {
+      try {
+        const dhtData = await opts.dhtFetch(manifest.fileId, index);
+        if (dhtData) {
+          collected[index] = dhtData;
           collectedCount++;
           opts.onProgress?.(collectedCount, manifest.k);
+          return;
         }
-      }).catch(() => undefined),
-    ),
-  );
+      } catch {
+        // DHT lookup failed — fall through to broadcast.
+      }
+    }
+    const data = await fetchShard(opts.wire, manifest.fileId, index);
+    if (data) {
+      collected[index] = data;
+      collectedCount++;
+      opts.onProgress?.(collectedCount, manifest.k);
+    }
+  };
+
+  await Promise.all(needed.map((index) => fetchOne(index).catch(() => undefined)));
 
   // If still short, try the parity shards we didn't initially request.
   if (collectedCount < manifest.k) {
@@ -276,17 +300,7 @@ export async function downloadFile(opts: DownloadOptions): Promise<{
     for (let i = 0; i < totalShards && collectedCount + additional.length < manifest.k; i++) {
       if (!collected[i] && !needed.includes(i)) additional.push(i);
     }
-    await Promise.all(
-      additional.map((index) =>
-        fetchShard(opts.wire, manifest.fileId, index).then((data) => {
-          if (data) {
-            collected[index] = data;
-            collectedCount++;
-            opts.onProgress?.(collectedCount, manifest.k);
-          }
-        }).catch(() => undefined),
-      ),
-    );
+    await Promise.all(additional.map((index) => fetchOne(index).catch(() => undefined)));
   }
 
   if (collectedCount < manifest.k) {
@@ -368,7 +382,10 @@ async function finalize(
 export function bindHolder(
   wire: Wire,
   store: PeerDriveStore,
-  options?: { onManifest?: (m: SignedManifest) => void },
+  options?: {
+    onManifest?: (m: SignedManifest) => void;
+    onShardStored?: (fileId: string, index: number, data: Uint8Array) => void;
+  },
 ): () => void {
   return wire.subscribe(async (from, msg) => {
     switch (msg.op) {
@@ -387,6 +404,7 @@ export function bindHolder(
             hashB64: bytesToB64(await sha256(data)),
             receivedAt: Date.now(),
           });
+          options?.onShardStored?.(msg.fileId, msg.index, data);
           wire.send(from, { op: 'drive:store-ack', fileId: msg.fileId, index: msg.index, ok: true });
         } catch (err) {
           wire.send(from, {
