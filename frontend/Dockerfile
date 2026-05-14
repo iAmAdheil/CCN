@@ -10,7 +10,12 @@
 FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts
+# Try `npm ci` first (reproducible); fall back to `npm install` if the
+# lockfile can't be applied cleanly (Linux runner vs Windows-generated
+# lockfile mismatches on optional platform deps). --ignore-scripts skips
+# postinstall binary downloads we don't need at this layer.
+RUN npm ci --no-audit --no-fund --ignore-scripts \
+ || npm install --no-audit --no-fund --ignore-scripts
 COPY . .
 # Pass the backend URL at build time — vite inlines it into the bundle.
 ARG VITE_SIGNAL_URL

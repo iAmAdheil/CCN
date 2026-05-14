@@ -19,12 +19,17 @@ WORKDIR /app
 # --- prod deps only (small layer) ---
 FROM base AS deps
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --ignore-scripts
+# Try `npm ci` first; fall back to `npm install` if the lockfile can't
+# be applied cleanly (e.g. cross-platform optional-dep mismatches when
+# the lockfile was generated on a different OS).
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts \
+ || npm install --omit=dev --no-audit --no-fund --ignore-scripts
 
 # --- build (typecheck + tsc emit) ---
 FROM base AS build
 COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts
+RUN npm ci --no-audit --no-fund --ignore-scripts \
+ || npm install --no-audit --no-fund --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
 RUN npx tsc -b
