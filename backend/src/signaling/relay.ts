@@ -5,6 +5,7 @@
 
 import type { Server, Socket } from 'socket.io';
 import { ChatRelayPayload, PubkeyExchangePayload } from '../validate/socket.js';
+import { counterSocketEvents } from '../observability/metrics.js';
 
 function shareRoom(socket: Socket, target: Socket | undefined): boolean {
   if (!target) return false;
@@ -34,6 +35,7 @@ export function registerRelayHandlers(io: Server, socket: Socket): void {
   // Receivers dedupe by msgId, so it's safe for a message to arrive via
   // both DC and relay.
   socket.on('chat-relay', (raw: unknown) => {
+    counterSocketEvents.inc({ event: 'chat_relay' });
     const parsed = ChatRelayPayload.safeParse(raw);
     if (!parsed.success) return;
     const data = parsed.data;

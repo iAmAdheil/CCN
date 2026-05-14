@@ -20,6 +20,9 @@ import { getTransporter } from './mail/transporter.js';
 import { bindRoomManager, getAllRooms } from './rooms/manager.js';
 import { registerRoomHandlers } from './signaling/room.js';
 import { registerRelayHandlers } from './signaling/relay.js';
+import { registerMetricsRoute } from './observability/routes.js';
+import { startMetricsSampler } from './observability/sampler.js';
+import { counterSocketEvents } from './observability/metrics.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -73,8 +76,11 @@ registerAuthRoutes(app, {
   getTransporter,
   ...(process.env.MAGIC_LINK_BASE ? { magicLinkBase: process.env.MAGIC_LINK_BASE } : {}),
 });
+registerMetricsRoute(app);
+startMetricsSampler(io, Number(process.env.METRICS_INTERVAL_MS) || 5000);
 
 io.of('/').on('connection', async (socket) => {
+  counterSocketEvents.inc({ event: 'connection' });
   const rooms = await getAllRooms();
   socket.emit('fetch active rooms', JSON.stringify(rooms));
 

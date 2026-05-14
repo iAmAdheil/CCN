@@ -21,6 +21,7 @@ import {
   signSession,
   verifyToken,
 } from './jwt.js';
+import { counterMagicLinksSent, counterRedemptions } from '../observability/metrics.js';
 
 interface AuthRouteDeps {
   getTransporter: () => Promise<nodemailer.Transporter>;
@@ -78,8 +79,10 @@ export function registerAuthRoutes(app: Express, deps: AuthRouteDeps): void {
         ? (await import('nodemailer')).default.getTestMessageUrl(info)
         : undefined;
 
+      counterMagicLinksSent.inc({ result: 'ok' });
       res.json({ ok: true, previewUrl });
     } catch (err) {
+      counterMagicLinksSent.inc({ result: 'error' });
       const message = err instanceof Error ? err.message : 'unknown error';
       res.status(500).json({ ok: false, error: message });
     }
@@ -89,17 +92,21 @@ export function registerAuthRoutes(app: Express, deps: AuthRouteDeps): void {
     try {
       const token = req.body?.token;
       if (typeof token !== 'string' || token.length === 0) {
+        counterRedemptions.inc({ result: 'invalid' });
         return res.status(400).json({ ok: false, error: 'missing token' });
       }
       const claims = verifyToken(token, 'magic');
       if (isJtiRedeemed(claims.jti)) {
+        counterRedemptions.inc({ result: 'replay' });
         return res.status(409).json({ ok: false, error: 'link already used' });
       }
       markJtiRedeemed(claims.jti);
       const { token: sessionToken, expSeconds } = signSession(claims.sub);
+      counterRedemptions.inc({ result: 'ok' });
       res.json({ ok: true, token: sessionToken, email: claims.sub, expSeconds });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'invalid token';
+      counterRedemptions.inc({ result: message.includes('expired') ? 'expired' : 'invalid' });
       res.status(401).json({ ok: false, error: message });
     }
   });

@@ -1,0 +1,86 @@
+{
+  "annotations": { "list": [] },
+  "title": "Socket-WebRTC backend",
+  "uid": "socket-webrtc",
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "editable": true,
+  "tags": ["webrtc", "sfu", "kademlia"],
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Connected sockets",
+      "id": 1,
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "vc_peers_total", "refId": "A" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area" }
+    },
+    {
+      "type": "stat",
+      "title": "Active rooms",
+      "id": 2,
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "vc_rooms_total", "refId": "A" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area" }
+    },
+    {
+      "type": "stat",
+      "title": "SFU producers",
+      "id": 3,
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "vc_sfu_producers_total", "refId": "A" }]
+    },
+    {
+      "type": "stat",
+      "title": "SFU consumers",
+      "id": 4,
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "vc_sfu_consumers_total", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "SFU bitrate (egress vs ingress)",
+      "id": 5,
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "vc_sfu_egress_bps", "legendFormat": "egress", "refId": "A" },
+        { "expr": "vc_sfu_ingress_bps", "legendFormat": "ingress", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-room peer count",
+      "id": 6,
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [{ "expr": "vc_room_size", "legendFormat": "{{room}}", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Socket events/sec",
+      "id": 7,
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(vc_socket_events_total[1m])", "legendFormat": "{{event}}", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Auth flow",
+      "id": 8,
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "rate(vc_auth_magic_links_sent_total[5m])", "legendFormat": "magic-link sent ({{result}})", "refId": "A" },
+        { "expr": "rate(vc_auth_redemptions_total[5m])", "legendFormat": "redemption ({{result}})", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Room mode (mesh/sfu) by room",
+      "id": 9,
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 6 },
+      "targets": [{ "expr": "vc_room_mode", "legendFormat": "{{room}} {{mode}}", "refId": "A" }]
+    }
+  ]
+}

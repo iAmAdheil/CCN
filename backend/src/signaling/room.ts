@@ -21,6 +21,7 @@ import {
   MediaStateChangePayload,
   OfferPayload,
 } from '../validate/socket.js';
+import { counterSocketEvents } from '../observability/metrics.js';
 
 interface MediaState {
   videoEnabled: boolean;
@@ -65,6 +66,7 @@ export function registerRoomHandlers(io: Server, socket: Socket): void {
   // { roomName, password? } object. Password-protected rooms reject the
   // join with `join room error` if the password is missing or wrong.
   socket.on('join room', async (raw: unknown) => {
+    counterSocketEvents.inc({ event: 'join_room' });
     const parsed = JoinRoomPayload.safeParse(raw);
     if (!parsed.success) return;
     const roomName = typeof parsed.data === 'string' ? parsed.data : parsed.data.roomName;
