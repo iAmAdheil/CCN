@@ -109,9 +109,13 @@ async function getTransporter() {
   });
 }
 
+// Store room passwords: roomName -> password
+const roomPasswords = new Map<string, string>();
+
 export interface Room {
   id: string;
   name: string;
+  hasPassword: boolean;
   activeUsers: {
     id: string;
     username: string;
@@ -145,6 +149,7 @@ async function getAllRooms(): Promise<Room[]> {
       rooms.push({
         id: roomName,
         name: roomName, // or extract from roomName if it's like "project:123"
+        hasPassword: roomPasswords.has(roomName),
         activeUsers: activeUsers
       });
     }
@@ -254,7 +259,20 @@ io.of("/").on("connection", async (socket) => {
 
   registerSfuHandlers(io, socket);
 
-  socket.on("join room", async (roomName: string) => {
+  socket.on("join room", async (data: { roomName: string; password?: string } | string) => {
+    const roomName = typeof data === 'string' ? data : data.roomName;
+    const password = typeof data === 'string' ? undefined : data.password;
+
+    // Check if room requires a password
+    if (roomPasswords.has(roomName)) {
+      const storedPassword = roomPasswords.get(roomName);
+      if (password !== storedPassword) {
+        socket.emit("join room error", { message: "Incorrect password" });
+        return;
+      }
+    }
+
+
     await socket.join(roomName);
     const mode = reconcileMode(roomName);
     socket.emit('room-mode', { roomName, mode, size: roomSize(roomName) });
@@ -284,6 +302,46 @@ io.of("/").on("connection", async (socket) => {
 
         clientsWithUsernames.push({
           id: clientID, // socketID
+          username: username,
+          isVideoEnabled: s.data.mediaState?.videoEnabled ?? true,
+          isAudioEnabled: s.data.mediaState?.audioEnabled ?? true,
+        });
+      }
+    }
+
+    socket.emit("fetch room users", JSON.stringify(clientsWithUsernames));
+  });
+
+  socket.on("create room", async (data: { roomName: string; password?: string }) => {
+    const { roomName, password } = data;
+    
+    // Store password if provided
+    if (password && password.trim()) {
+      roomPasswords.set(roomName, password.trim());
+    }
+    
+    // Join the room
+    await socket.join(roomName);
+    const rooms = await getAllRooms();
+    io.emit("fetch active rooms", JSON.stringify(rooms));
+
+    const newUser: RoomUser = {
+      id: socket.id,
+      username: socket.handshake.auth.username,
+      isVideoEnabled: socket.data.mediaState.videoEnabled ?? true,
+      isAudioEnabled: socket.data.mediaState.audioEnabled ?? true
+    };
+    io.to(roomName).except(socket.id).emit("add new room user", JSON.stringify(newUser));
+
+    const clientIDs = io.sockets.adapter.rooms.get(roomName) || new Set();
+    const clientsWithUsernames = [];
+    for (const clientID of clientIDs) {
+      if (clientID === socket.id) continue;
+      const s = io.sockets.sockets.get(clientID);
+      if (s) {
+        const username = s.handshake.auth.username;
+        clientsWithUsernames.push({
+          id: clientID,
           username: username,
           isVideoEnabled: s.data.mediaState?.videoEnabled ?? true,
           isAudioEnabled: s.data.mediaState?.audioEnabled ?? true,
@@ -388,6 +446,12 @@ io.of("/").on("connection", async (socket) => {
       socket.to(roomName).emit("remove room user", socket.id);
       await socket.leave(roomName);
       reconcileMode(roomName);
+
+      // Clean up password when room empties
+      const room = io.sockets.adapter.rooms.get(roomName);
+      if (!room || room.size === 0) {
+        roomPasswords.delete(roomName);
+      }
     }
 
     const rooms = await getAllRooms();
@@ -406,6 +470,17 @@ io.of("/").on("connection", async (socket) => {
   });
 
   socket.on("disconnect", async () => {
+    // Clean up passwords for empty rooms
+    const allRooms = io.of("/").adapter.rooms;
+    for (const [roomName] of allRooms) {
+      if (!io.of("/").sockets.has(roomName)) {
+        const room = io.sockets.adapter.rooms.get(roomName);
+        if (!room || room.size === 0) {
+          roomPasswords.delete(roomName);
+        }
+      }
+    }
+    
     const rooms = await getAllRooms();
     io.emit("fetch active rooms", JSON.stringify(rooms));
   });
@@ -414,5 +489,5 @@ io.of("/").on("connection", async (socket) => {
 
 server.listen(3000, '0.0.0.0', () => {
   const proto = isHttps ? 'https' : 'http';
-  console.log(`server running at ${proto}://10.0.11.158:3000`);
+  console.log(`server running on port 3000!`);
 });

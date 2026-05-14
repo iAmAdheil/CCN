@@ -69,6 +69,7 @@ function bufferToHex(buf: ArrayBuffer): string {
 export interface Room {
   id: string;
   name: string;
+  hasPassword: boolean;
   activeUsers: {
     id: string;
     username: string;
@@ -98,6 +99,8 @@ const Index = () => {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomUsers, setRoomUsers] = useState<RoomUser[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [pendingRoomJoin, setPendingRoomJoin] = useState<{ roomName: string; password?: string } | null>(null);
 
   const socketRef = useRef<Socket>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -347,10 +350,13 @@ const Index = () => {
       }
 
       const SIGNAL_URL =
-        (import.meta as any).env?.VITE_SIGNAL_URL ?? `http://${window.location.hostname}:3000`;
+        (import.meta as any).env?.VITE_SIGNAL_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`;
       socketRef.current = io(SIGNAL_URL, {
         auth: {
           username: username,
+        },
+        extraHeaders: {
+          "ngrok-skip-browser-warning": "true",
         },
       });
       setSocketState(socketRef.current);
@@ -364,6 +370,11 @@ const Index = () => {
       socketRef.current?.on("fetch active rooms", (roomsStr) => {
         const rooms = JSON.parse(roomsStr) as Room[];
         setRooms(rooms);
+      });
+
+      socketRef.current?.on("join room error", (data: { message: string }) => {
+        setPasswordError(data.message);
+        setPendingRoomJoin(null);
       });
 
       socketRef.current?.on("add new room user", (userStr) => {
@@ -758,16 +769,34 @@ const Index = () => {
   }, []);
 
   const handleJoinRoom = useCallback(
-    (roomName: string) => {
+    (roomName: string, password?: string) => {
       setCurrentRoomName(roomName);
       setChatMessages([]);
       seenChatIdsRef.current.clear();
-      // Emit join immediately; media can be acquired later
-      socketRef.current?.emit("join room", roomName);
+      setPasswordError(null);
+      socketRef.current?.emit("join room", { roomName, password });
       // Try to prepare media in background, but don't block join flow
       ensureLocalStream().catch((error) => {
         console.error(
           "Failed to acquire local media before joining room",
+          error
+        );
+      });
+    },
+    [ensureLocalStream]
+  );
+
+  const handleCreateRoom = useCallback(
+    (roomName: string, password?: string) => {
+      setCurrentRoomName(roomName);
+      setChatMessages([]);
+      setPasswordError(null);
+      // Emit create room with password if provided
+      socketRef.current?.emit("create room", { roomName, password });
+      // Try to prepare media in background, but don't block join flow
+      ensureLocalStream().catch((error) => {
+        console.error(
+          "Failed to acquire local media before creating room",
           error
         );
       });
@@ -1148,8 +1177,13 @@ const Index = () => {
         <RoomLobby
           username={username}
           onJoinRoom={handleJoinRoom}
+          onCreateRoom={handleCreateRoom}
           onLogout={handleLogout}
           rooms={rooms}
+          passwordError={passwordError}
+          onPasswordErrorClear={() => setPasswordError(null)}
+          pendingRoomJoin={pendingRoomJoin}
+          onPendingRoomJoin={setPendingRoomJoin}
         />
       )}
 

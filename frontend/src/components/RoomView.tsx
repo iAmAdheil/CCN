@@ -24,7 +24,13 @@ import { Avatar, AvatarFallback } from "./ui/avatar";
 import { RoomUser, type ChatMessage } from "@/pages/Index";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import NetworkDiagnostics from "./NetworkDiagnostics";
@@ -193,10 +199,13 @@ const RoomView = ({
     setChatInput("");
   }, [chatInput, onSendChat]);
 
-  const handleFilePick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0] ?? null;
-    setFileToSend(f);
-  }, []);
+  const handleFilePick = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0] ?? null;
+      setFileToSend(f);
+    },
+    []
+  );
 
   const handleSendFile = useCallback(() => {
     if (!fileToSend) return;
@@ -233,27 +242,21 @@ const RoomView = ({
   }, [mailTo, mailSubject, mailBody]);
 
   return (
-    <div className="h-screen bg-gradient-to-br from-background via-background to-muted/20 flex flex-col">
+    <div className="h-screen bg-background flex flex-col">
       {/* Header */}
-      <header className="border-b border-border/50 bg-card/80 backdrop-blur-xl shadow-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-20">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-gradient-primary rounded-xl flex items-center justify-center shadow-medium">
-                <Video className="w-6 h-6 text-primary-foreground" />
+      <header className="border-b border-border bg-background sticky top-0 z-50">
+        <div className="container mx-auto px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-foreground rounded-lg flex items-center justify-center">
+                <Video className="w-4 h-4 text-background" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">{roomName}</h1>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                  <Badge
-                    variant="outline"
-                    className="gap-1.5 text-xs border-green-500/20 text-green-600 dark:text-green-400"
-                  >
-                    <Users className="w-3 h-3" />
-                    {participants.length}{" "}
-                    {participants.length === 1 ? "participant" : "participants"}
-                  </Badge>
+                <h1 className="text-base font-semibold">{roomName}</h1>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Users className="w-3 h-3" />
+                  {participants.length}{" "}
+                  {participants.length === 1 ? "person" : "people"}
                 </div>
               </div>
             </div>
@@ -280,10 +283,10 @@ const RoomView = ({
               <Button variant="outline" size="sm" className="gap-2">
                 <Settings className="w-4 h-4" />
                 <span className="hidden sm:inline">Settings</span>
-              </Button>
+              </Button> */}
               <Sheet open={chatOpen} onOpenChange={setChatOpen}>
                 <SheetTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2">
+                  <Button variant="ghost" size="sm" className="gap-2">
                     <MessageCircle className="w-4 h-4" />
                     <span className="hidden sm:inline">Chat</span>
                   </Button>
@@ -367,19 +370,27 @@ const RoomView = ({
                     <ScrollArea className="flex-1 p-4">
                       <div className="space-y-3">
                         {chatMessages.map((m) => (
-                          <div key={`${m.ts}-${m.id}`} className="flex flex-col">
+                          <div
+                            key={`${m.ts}-${m.id}`}
+                            className="flex flex-col"
+                          >
                             <div className="text-xs text-muted-foreground">
-                              {m.username} • {new Date(m.ts).toLocaleTimeString()}
+                              {m.username} •{" "}
+                              {new Date(m.ts).toLocaleTimeString()}
                             </div>
                             <div className="text-sm break-words">{m.text}</div>
                           </div>
                         ))}
                         {chatMessages.length === 0 && (
-                          <div className="text-sm text-muted-foreground">No messages yet</div>
+                          <div className="text-sm text-muted-foreground">
+                            No messages yet
+                          </div>
                         )}
                         {receivedFiles.length > 0 && (
                           <div className="pt-4 space-y-2">
-                            <div className="text-xs font-medium text-muted-foreground">Received files</div>
+                            <div className="text-xs font-medium text-muted-foreground">
+                              Received files
+                            </div>
                             {receivedFiles.map((f, idx) => (
                               <div key={`${f.url || "err"}-${idx}`} className="flex items-center justify-between gap-2 text-sm">
                                 <div className="truncate" title={`${f.name} • ${(f.size/1024/1024).toFixed(2)} MB`}>{f.name}</div>
@@ -409,7 +420,10 @@ const RoomView = ({
                             }
                           }}
                         />
-                        <Button onClick={handleSend} disabled={!chatInput.trim()}>
+                        <Button
+                          onClick={handleSend}
+                          disabled={!chatInput.trim()}
+                        >
                           <Send className="w-4 h-4" />
                         </Button>
                       </div>
@@ -452,14 +466,28 @@ const RoomView = ({
                 </SheetContent>
               </Sheet>
               <div className="flex items-center gap-2">
-                <input id="file-input" type="file" className="hidden" onChange={handleFilePick} />
+                <input
+                  id="file-input"
+                  type="file"
+                  className="hidden"
+                  onChange={handleFilePick}
+                />
                 <Button asChild variant="outline" size="sm" className="gap-2">
                   <label htmlFor="file-input" className="cursor-pointer">
-                    <span className="inline-flex items-center gap-2"><Paperclip className="w-4 h-4" /> Choose file</span>
+                    <span className="inline-flex items-center gap-2">
+                      <Paperclip className="w-4 h-4" />{" "}
+                      <p className="hidden sm:inline">Choose file</p>
+                    </span>
                   </label>
                 </Button>
-                <Button size="sm" onClick={handleSendFile} disabled={!fileToSend} className="gap-2">
-                  <Send className="w-4 h-4" /> Send
+                <Button
+                  size="sm"
+                  onClick={handleSendFile}
+                  disabled={!fileToSend}
+                  className="gap-2"
+                >
+                  <Send className="w-4 h-4" />
+                  <p className="hidden sm:inline">Send</p>
                 </Button>
               </div>
             </div>
@@ -468,61 +496,56 @@ const RoomView = ({
       </header>
 
       {/* Video Grid */}
-      <main className="flex-1 container mx-auto px-6 sm:px-8 lg:px-12 py-10 overflow-auto no-scrollbar">
-        <div className={`grid ${getGridCols(participants.length)} gap-8`}>
+      <main className="flex-1 container mx-auto px-6 lg:px-8 py-6 overflow-auto">
+        <div className={`grid ${getGridCols(participants.length)} gap-4`}>
           {/* Current User Video */}
-          <Card className="aspect-video bg-gradient-card relative overflow-hidden group shadow-medium animate-fade-in border-2 border-primary/20">
+          <Card className="aspect-video relative overflow-hidden group">
             {!isVideo && (
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center">
+              <div className="absolute inset-0 bg-muted/50 flex items-center justify-center">
                 <div className="text-center flex flex-col gap-2">
-                  <Avatar className="w-24 h-24 mx-auto shadow-medium">
-                    <AvatarFallback className="bg-primary text-primary-foreground text-3xl font-bold">
+                  <Avatar className="w-16 h-16 mx-auto">
+                    <AvatarFallback className="text-2xl">
                       {username.charAt(0).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="font-semibold text-lg text-foreground">
-                      {username}
-                    </p>
-                    <p className="text-sm text-muted-foreground">You</p>
+                    <p className="font-medium text-sm">{username}</p>
+                    <p className="text-xs text-muted-foreground">You</p>
                   </div>
                 </div>
               </div>
             )}
             <video
               ref={videoRef}
-              className="w-full h-full"
+              className="w-full h-full object-cover"
               autoPlay
               playsInline
               muted
             />
-            <div className="absolute top-4 left-4">
-              <Badge className="bg-accent text-accent-foreground shadow-medium">
+            <div className="absolute top-3 left-3">
+              <div className="px-2 py-1 rounded-md bg-background/80 backdrop-blur-sm text-xs font-medium">
                 You
-              </Badge>
+              </div>
             </div>
-            <div className="absolute bottom-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="absolute bottom-3 right-3 flex gap-2">
               <div
-                className={`w-10 h-10 ${
-                  micMuted ? "bg-destructive" : "bg-background/90"
-                } backdrop-blur-sm rounded-full flex items-center justify-center shadow-medium`}
+                className={`w-8 h-8 ${
+                  micMuted ? "bg-destructive" : "bg-background/80"
+                } backdrop-blur-sm rounded-lg flex items-center justify-center`}
               >
                 {micMuted ? (
-                  <MicOff
-                    className="w-4 h-4 text-destructive-foreground"
-                    color="white"
-                  />
+                  <MicOff className="w-4 h-4" />
                 ) : (
-                  <Mic className="w-4 h-4" color="black" />
+                  <Mic className="w-4 h-4" />
                 )}
               </div>
               <div
-                className={`w-10 h-10 ${
-                  !isVideo ? "bg-destructive" : "bg-background/90"
-                } backdrop-blur-sm rounded-full flex items-center justify-center shadow-medium`}
+                className={`w-8 h-8 ${
+                  !isVideo ? "bg-destructive" : "bg-background/80"
+                } backdrop-blur-sm rounded-lg flex items-center justify-center`}
               >
                 {!isVideo ? (
-                  <VideoOff className="w-4 h-4 text-destructive-foreground" />
+                  <VideoOff className="w-4 h-4" />
                 ) : (
                   <Video className="w-4 h-4" />
                 )}
@@ -532,23 +555,20 @@ const RoomView = ({
 
           {participants
             .filter((p) => p.username !== username)
-            .map((p, index) => (
+            .map((p) => (
               <Card
                 key={p.id}
-                className="aspect-video bg-gradient-card relative overflow-hidden group shadow-medium animate-fade-in hover:shadow-lg transition-all duration-300 hover:border-primary/30"
-                style={{ animationDelay: `${(index + 1) * 0.1}s` }}
+                className="aspect-video relative overflow-hidden group"
               >
                 {(!p.videoStream || !p.isVideoEnabled) && (
-                  <div className="absolute inset-0 bg-gradient-to-br from-muted/40 to-muted/20 flex items-center justify-center">
+                  <div className="absolute inset-0 bg-muted/50 flex items-center justify-center">
                     <div className="text-center flex flex-col gap-2">
-                      <Avatar className="w-20 h-20 mx-auto shadow-soft">
-                        <AvatarFallback className="bg-primary/20 text-primary text-2xl font-bold">
+                      <Avatar className="w-16 h-16 mx-auto">
+                        <AvatarFallback className="text-2xl">
                           {p.username.charAt(0).toUpperCase()}
                         </AvatarFallback>
                       </Avatar>
-                      <p className="font-semibold text-foreground">
-                        {p.username}
-                      </p>
+                      <p className="font-medium text-sm">{p.username}</p>
                     </div>
                   </div>
                 )}
@@ -558,23 +578,36 @@ const RoomView = ({
                       video.srcObject = p.isVideoEnabled ? p.videoStream : null;
                     }
                   }}
-                  className="inset-0"
+                  className="w-full h-full object-cover"
                   autoPlay
                   playsInline
                 />
-                <div className="absolute bottom-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="w-10 h-10 bg-background/90 backdrop-blur-sm rounded-full flex items-center justify-center shadow-medium border-2 border-border/50">
+                <div className="absolute top-3 left-3">
+                  <div className="px-2 py-1 rounded-md bg-background/80 backdrop-blur-sm text-xs font-medium">
+                    {p.username}
+                  </div>
+                </div>
+                <div className="absolute bottom-3 right-3 flex gap-2">
+                  <div
+                    className={`w-8 h-8 ${
+                      p.isAudioEnabled ? "bg-background/80" : "bg-destructive"
+                    } backdrop-blur-sm rounded-lg flex items-center justify-center`}
+                  >
                     {p.isAudioEnabled ? (
-                      <Mic className="w-5 h-5 text-muted-foreground" />
+                      <Mic className="w-4 h-4" />
                     ) : (
-                      <MicOff className="w-5 h-5 text-destructive" />
+                      <MicOff className="w-4 h-4" />
                     )}
                   </div>
-                  <div className="w-10 h-10 bg-background/90 backdrop-blur-sm rounded-full flex items-center justify-center shadow-medium border-2 border-border/50">
+                  <div
+                    className={`w-8 h-8 ${
+                      p.isVideoEnabled ? "bg-background/80" : "bg-destructive"
+                    } backdrop-blur-sm rounded-lg flex items-center justify-center`}
+                  >
                     {p.isVideoEnabled ? (
-                      <Video className="w-5 h-5 text-muted-foreground" />
+                      <Video className="w-4 h-4" />
                     ) : (
-                      <VideoOff className="w-5 h-5 text-destructive" />
+                      <VideoOff className="w-4 h-4" />
                     )}
                   </div>
                 </div>
@@ -584,11 +617,11 @@ const RoomView = ({
       </main>
 
       {/* Controls Footer */}
-      <footer className="border-t border-border/50 bg-card/90 backdrop-blur-xl shadow-lg">
-        <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-center gap-4">
+      <footer className="border-t border-border bg-background">
+        <div className="container mx-auto px-6 lg:px-8 py-4">
+          <div className="flex items-center justify-center gap-3">
             <Button
-              size="lg"
+              size="icon"
               variant={micMuted ? "destructive" : "outline"}
               onClick={() =>
                 setMicMuted((prev) => {
@@ -597,20 +630,16 @@ const RoomView = ({
                   return next;
                 })
               }
-              className={`w-16 h-16 rounded-full transition-all duration-200 shadow-medium hover:shadow-lg ${
-                micMuted
-                  ? "bg-destructive hover:bg-destructive/70 text-destructive-foreground"
-                  : "hover:bg-primary hover:bg-gray-100"
-              }`}
+              className="h-10 w-10 rounded-lg"
             >
               {micMuted ? (
-                <MicOff className="w-6 h-6" color="white" />
+                <MicOff className="w-5 h-5" />
               ) : (
-                <Mic className="w-6 h-6" color="black" />
+                <Mic className="w-5 h-5" />
               )}
             </Button>
             <Button
-              size="lg"
+              size="icon"
               variant={!isVideo ? "destructive" : "outline"}
               onClick={() =>
                 setIsVideo((prevState) => {
@@ -619,29 +648,29 @@ const RoomView = ({
                   return next;
                 })
               }
-              className={`w-16 h-16 rounded-full transition-all duration-200 shadow-medium hover:shadow-lg ${
-                !isVideo
-                  ? "bg-destructive hover:bg-destructive/70 text-destructive-foreground"
-                  : "hover:bg-primary hover:bg-gray-100"
-              }`}
+              className="h-10 w-10 rounded-lg"
             >
               {!isVideo ? (
-                <VideoOff className="w-6 h-6" color="white" />
+                <VideoOff className="w-5 h-5" />
               ) : (
-                <Video className="w-6 h-6" color="black" />
+                <Video className="w-5 h-5" />
               )}
             </Button>
             <Button
-              size="lg"
+              size="icon"
+              variant="destructive"
               onClick={onLeave}
-              className="w-16 h-16 rounded-full bg-destructive hover:bg-destructive/70 text-destructive-foreground shadow-medium hover:shadow-lg transition-all duration-200"
+              className="h-10 w-10 rounded-lg"
             >
-              <PhoneOff className="w-6 h-6" />
+              <PhoneOff className="w-5 h-5" />
             </Button>
           </div>
           {fileToSend && (
             <div className="mt-4">
-              <div className="text-xs text-muted-foreground mb-2">Sending: {fileToSend.name} ({(fileToSend.size/1024/1024).toFixed(2)} MB)</div>
+              <div className="text-xs text-muted-foreground mb-2">
+                Sending: {fileToSend.name} (
+                {(fileToSend.size / 1024 / 1024).toFixed(2)} MB)
+              </div>
               <Progress value={uploadProgress} />
             </div>
           )}
