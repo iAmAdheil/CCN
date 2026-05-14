@@ -18,6 +18,14 @@ import { useMediaE2EE } from "@/hooks/useMediaE2EE";
 import type { MediaKeyEnvelope } from "@/lib/mediaE2EE/groupKey";
 import { HeartbeatTracker } from "@/lib/resilience/heartbeat";
 import { useConnectionHealth } from "@/hooks/useConnectionHealth";
+import {
+  clearSession,
+  consumeMagicParamFromUrl,
+  loadSession,
+  redeemMagicToken,
+  saveSession,
+  type AuthSession,
+} from "@/lib/authClient";
 
 type AppState = "username" | "lobby" | "room";
 
@@ -97,6 +105,10 @@ export interface ChatMessage {
 const Index = () => {
   const [appState, setAppState] = useState<AppState>("username");
   const [username, setUsername] = useState("");
+  // Auth: persisted session JWT (if any) and an in-flight redeem error
+  // surfaced to UsernameModal.
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => loadSession());
+  const [redeemError, setRedeemError] = useState<string | null>(null);
   const [currentRoomName, setCurrentRoomName] = useState("");
   const [rooms, setRooms] = useState<Room[]>([]);
   const [roomUsers, setRoomUsers] = useState<RoomUser[]>([]);
@@ -343,6 +355,23 @@ const Index = () => {
     [encryptAndDispatchChat]
   );
 
+  // On first mount, look for ?magic=<token> in the URL. If present, redeem
+  // it for a session JWT and stash it. The username modal will pre-fill
+  // the email field from the session.
+  useEffect(() => {
+    const magic = consumeMagicParamFromUrl();
+    if (!magic) return;
+    void (async () => {
+      const result = await redeemMagicToken(magic);
+      if ("error" in result) {
+        setRedeemError(result.error);
+        return;
+      }
+      saveSession(result);
+      setAuthSession(result);
+    })();
+  }, []);
+
   // Pre-warm the ICE config on mount and refresh well before TTL expires.
   useEffect(() => {
     if (!username) return;
@@ -373,6 +402,11 @@ const Index = () => {
       socketRef.current = io(SIGNAL_URL, {
         auth: {
           username: username,
+          // Optional session JWT — backend verifies it via the io middleware
+          // when AUTH_REQUIRED=true. When the auth flow wasn't used, this
+          // is undefined and the server falls through to the legacy guest
+          // path.
+          ...(authSession?.token ? { token: authSession.token } : {}),
         },
         extraHeaders: {
           "ngrok-skip-browser-warning": "true",
@@ -698,7 +732,7 @@ const Index = () => {
     } else if (socketRef.current === null && appState !== "username") {
       startListening();
     }
-  }, [addChatMessage, appState, ensureLocalStream, ensureRtcConfig, flushPendingChats, sendDcOrRelay, username]);
+  }, [addChatMessage, appState, authSession, ensureLocalStream, ensureRtcConfig, flushPendingChats, sendDcOrRelay, username]);
 
   const cleanupPeerConnections = useCallback(() => {
     Object.values(pcsRef.current).forEach((pc) => {
@@ -809,8 +843,9 @@ const Index = () => {
     };
   }, []);
 
-  const handleUsernameSubmit = useCallback((name: string) => {
+  const handleUsernameSubmit = useCallback((name: string, _email: string | null) => {
     setUsername(name);
+    setRedeemError(null);
     setAppState("lobby");
   }, []);
 
@@ -892,6 +927,10 @@ const Index = () => {
     setCurrentRoomName("");
     setUsername("");
     mediaE2EERef.current.reset();
+    // Clear the auth session too — logout should drop the JWT so the next
+    // login starts fresh. Re-sign-in re-runs the magic-link flow.
+    clearSession();
+    setAuthSession(null);
     setAppState("username");
 
     if (socketRef.current) {
@@ -1313,7 +1352,12 @@ const Index = () => {
   return (
     <>
       {appState === "username" && (
-        <UsernameModal open={true} onSubmit={handleUsernameSubmit} />
+        <UsernameModal
+          open={true}
+          {...(authSession?.email ? { initialEmail: authSession.email } : {})}
+          {...(redeemError !== null ? { redeemError } : {})}
+          onSubmit={handleUsernameSubmit}
+        />
       )}
 
       {appState === "lobby" && (

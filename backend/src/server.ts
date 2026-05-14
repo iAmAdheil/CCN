@@ -11,6 +11,8 @@ import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import { registerSfuHandlers } from './sfu/handlers.js';
 import { modeForSize, type RoomMode } from './sfu/mode.js';
+import { registerAuthRoutes } from './auth/routes.js';
+import { attachAuthMiddleware } from './auth/socket.js';
 
 // Per-room mode. Derived from peer count but kept in a map so we can emit
 // transitions (mesh -> sfu and back) exactly when the count crosses the
@@ -88,6 +90,8 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+
+attachAuthMiddleware(io);
 
 async function getTransporter() {
   if (process.env.SMTP_HOST) {
@@ -223,6 +227,11 @@ app.get('/turn-credentials', (req, res) => {
     expiresAt: expiry * 1000,
     turnAvailable: true,
   });
+});
+
+registerAuthRoutes(app, {
+  getTransporter,
+  ...(process.env.MAGIC_LINK_BASE ? { magicLinkBase: process.env.MAGIC_LINK_BASE } : {}),
 });
 
 app.post('/mail/send', async (req, res) => {
