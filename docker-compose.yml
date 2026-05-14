@@ -1,49 +1,108 @@
 # Docker Compose for the Socket-WebRTC platform.
 #
-# Today this only runs coturn (the TURN/STUN relay). The signaling server and
-# frontend still run natively via npm — they'll move into this compose file in
-# a later pass.
-#
 # Quick start:
 #   1. cp .env.example .env
-#   2. openssl rand -hex 32   # paste into TURN_SECRET in .env
-#   3. docker compose up -d coturn
-#   4. Set the same TURN_SECRET / TURN_HOST in backend/.env, then start the
-#      signaling server. The /turn-credentials endpoint will mint creds.
+#   2. openssl rand -hex 32   # paste into TURN_SECRET (and AUTH_JWT_SECRET) in .env
+#   3. docker compose up -d
+#   4. App: http://localhost:8080  ·  Backend: http://localhost:3000
+#      Prometheus: http://localhost:9090  ·  Grafana: http://localhost:3001 (admin/admin)
 #
-# Production deployment notes are in the comments below.
+# Production deployment notes are inline below.
 
 services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: socket-webrtc-backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:?AUTH_JWT_SECRET not set}
+      - TURN_SECRET=${TURN_SECRET:-}
+      - TURN_HOST=${TURN_HOST:-}
+      - TURN_PORT=${TURN_PORT:-3478}
+      - TURN_TLS=${TURN_TLS:-false}
+      - SFU_MESH_MAX=${SFU_MESH_MAX:-4}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - MAGIC_LINK_BASE=${MAGIC_LINK_BASE:-http://localhost:8080}
+      - METRICS_INTERVAL_MS=${METRICS_INTERVAL_MS:-5000}
+    ports:
+      - "3000:3000"
+      # mediasoup RTP — must match transport.ts port range.
+      - "40000-40100:40000-40100/udp"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_SIGNAL_URL: ${VITE_SIGNAL_URL:-http://localhost:3000}
+    container_name: socket-webrtc-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
   coturn:
     image: coturn/coturn:4.6
     container_name: socket-webrtc-coturn
     restart: unless-stopped
-
     # On a Linux production host, prefer host networking — UDP relay through
     # docker-proxy is slow and flakey. To switch:
     #   - uncomment `network_mode: host`
     #   - delete the entire `ports:` block below
     # network_mode: host
-
     ports:
       - "3478:3478/tcp"
       - "3478:3478/udp"
       - "5349:5349/tcp"
       - "5349:5349/udp"
-      # Relay range — MUST match min-port/max-port in turnserver.conf.
       - "49160-49200:49160-49200/udp"
-
     volumes:
       - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
-
-    # Static settings live in turnserver.conf; secrets/host-specific bits are
-    # injected here so a single config file works across environments.
     command:
       - "-c"
       - "/etc/coturn/turnserver.conf"
       - "--static-auth-secret=${TURN_SECRET:?TURN_SECRET not set in .env}"
       - "--realm=${TURN_REALM:-socket-webrtc.local}"
-      # external-ip tells coturn what IP to advertise in relay candidates.
-      # For local dev: 127.0.0.1. For LAN testing: your machine's LAN IP.
-      # For cloud: your VM's public IP.
       - "--external-ip=${EXTERNAL_IP:-127.0.0.1}"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: socket-webrtc-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # Allow the prometheus-in-container to reach the host's port 3000.
+      # Linux Docker doesn't auto-resolve host.docker.internal; this fixes
+      # it. Mac/Windows already do.
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: socket-webrtc-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana-dashboard.json:/var/lib/grafana/dashboards/socket-webrtc.json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-data:

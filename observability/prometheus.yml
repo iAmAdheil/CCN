@@ -4,7 +4,10 @@ global:
 scrape_configs:
   - job_name: socket-webrtc
     static_configs:
+      # When running under docker compose the backend is reachable as the
+      # service hostname `backend`. For a non-compose deploy point this at
+      # whatever hostname:port the backend actually lives on.
       - targets:
-          - host.docker.internal:3000
+          - backend:3000
         labels:
           service: socket-webrtc-backend
