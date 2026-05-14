@@ -1354,6 +1354,7 @@ const Index = () => {
             peers: Math.max(0, roomUsers.length - 1),
             producers: sfu.producers,
             consumers: sfu.consumers,
+            abr: sfu.abr,
           }}
           drive={drive}
           selfPeerId={socketIdState}

@@ -35,6 +35,7 @@ import {
   type PeerStats,
 } from "@/hooks/useWebRTCStats";
 import type { ConnectionHealth } from "@/hooks/useConnectionHealth";
+import type { AbrSnapshot } from "@/lib/abr/abr";
 
 interface NetworkDiagnosticsProps {
   pcsRef: MutableRefObject<Record<string, RTCPeerConnection>>;
@@ -44,12 +45,78 @@ interface NetworkDiagnosticsProps {
     peers: number;
     producers: number;
     consumers: number;
+    abr?: AbrSnapshot | null;
   };
   mediaE2EE?: {
     hasKey: boolean;
     keyId: number | null;
   };
   connectionHealth?: ConnectionHealth;
+}
+
+function AbrCard({ abr }: { abr: AbrSnapshot }) {
+  const totalTarget = abr.layers.reduce((a, l) => a + (l.active ? l.targetBitrate : 0), 0);
+  const dirArrow = abr.lastChange === "up" ? "▲" : abr.lastChange === "down" ? "▼" : "◆";
+  const dirColor =
+    abr.lastChange === "up"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : abr.lastChange === "down"
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-muted-foreground";
+  return (
+    <Card className="p-4 space-y-3 border-primary/30">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-semibold">Adaptive bitrate · simulcast</div>
+          <div className="text-[11px] text-muted-foreground">
+            AIMD over getStats(). Sender publishes {abr.layers.length} spatial layers; SFU forwards
+            whichever the consumer's downlink supports.
+          </div>
+        </div>
+        <span className={`text-lg font-mono ${dirColor}`} title={`Last decision: ${abr.lastChange}`}>
+          {dirArrow}
+        </span>
+      </div>
+      <Separator />
+      <div className="grid grid-cols-3 gap-3 text-xs">
+        <Stat label="Target" value={formatBitrate(totalTarget)} />
+        <Stat
+          label="Available"
+          value={
+            abr.availableOutgoingBitrate !== null ? formatBitrate(abr.availableOutgoingBitrate) : "—"
+          }
+        />
+        <Stat label="Loss" value={`${abr.packetLossPct.toFixed(2)}%`} />
+      </div>
+      <Separator />
+      <div className="space-y-1.5">
+        {abr.layers.map((l) => {
+          const pctOfTotal = totalTarget > 0 ? Math.round((l.targetBitrate / totalTarget) * 100) : 0;
+          return (
+            <div key={l.rid} className="text-[11px] font-mono flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={`text-[9px] uppercase tracking-wide ${
+                    l.active
+                      ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
+                      : "border-muted text-muted-foreground"
+                  }`}
+                >
+                  {l.rid}
+                </Badge>
+                <span className="text-muted-foreground">{formatBitrate(l.targetBitrate)}</span>
+              </span>
+              <span className="text-muted-foreground">{l.active ? `${pctOfTotal}%` : "off"}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="text-[10px] text-muted-foreground">
+        Observed sender throughput: {formatBitrate(abr.observedOutboundBps)} · {abr.ticks} tick(s).
+      </div>
+    </Card>
+  );
 }
 
 function ConnectionHealthCard({ health }: { health: ConnectionHealth }) {
@@ -502,6 +569,7 @@ const NetworkDiagnostics = ({ pcsRef, participants, sfu, mediaE2EE, connectionHe
             <div className="space-y-3">
               {connectionHealth && <ConnectionHealthCard health={connectionHealth} />}
               {sfu && <SfuComparisonCard {...sfu} mediaE2EE={mediaE2EE} />}
+              {sfu?.abr && <AbrCard abr={sfu.abr} />}
               {sfu?.mode === "mesh" && remotePeers.length === 0 && (
                 <div className="text-sm text-muted-foreground">No active peer connections.</div>
               )}

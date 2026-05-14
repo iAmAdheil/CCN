@@ -114,8 +114,24 @@ export function createRecvTransport(socket: Socket, roomId: string, device: Devi
   return makeTransport(socket, roomId, device, 'recv');
 }
 
-export async function produceTrack(transport: Transport, track: MediaStreamTrack): Promise<Producer> {
-  return transport.produce({ track });
+export interface ProduceOptions {
+  encodings?: RTCRtpEncodingParameters[];
+  codecOptions?: { videoGoogleStartBitrate?: number };
+}
+
+export async function produceTrack(
+  transport: Transport,
+  track: MediaStreamTrack,
+  options: ProduceOptions = {},
+): Promise<Producer> {
+  const params: Parameters<Transport["produce"]>[0] = { track };
+  if (options.encodings && options.encodings.length > 0) {
+    params.encodings = options.encodings;
+  }
+  if (options.codecOptions) {
+    params.codecOptions = options.codecOptions;
+  }
+  return transport.produce(params);
 }
 
 export async function consumeProducer(

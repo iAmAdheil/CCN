@@ -40,6 +40,7 @@ import NetworkDiagnostics from "./NetworkDiagnostics";
 import DriveSheet from "./DriveSheet";
 import type { DriveApi } from "@/hooks/useDrive";
 import type { ConnectionHealth } from "@/hooks/useConnectionHealth";
+import type { AbrSnapshot } from "@/lib/abr/abr";
 import { safetyNumber } from "@/lib/chatCrypto";
 import type { ArpSession } from "@/lib/arpSession";
 import ARPVisualizer from "./ARPVisualizer";
@@ -69,6 +70,7 @@ interface RoomViewProps {
     peers: number;
     producers: number;
     consumers: number;
+    abr?: AbrSnapshot | null;
   };
   drive?: DriveApi;
   selfPeerId?: string | null;
