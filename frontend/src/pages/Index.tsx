@@ -1258,7 +1258,9 @@ const Index = () => {
 
   const sendFileToAll = useCallback(async (file: File) => {
     const peers = Object.values(dcsRef.current).filter((dc) => dc.readyState === "open");
-    if (peers.length === 0) return;
+    if (peers.length === 0) {
+      throw new Error("No connected peers. Wait for someone to join the room before sending a file.");
+    }
 
     setUploadProgress(0);
 

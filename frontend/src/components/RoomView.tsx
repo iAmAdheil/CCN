@@ -160,6 +160,7 @@ const RoomView = ({
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [fileToSend, setFileToSend] = useState<File | null>(null);
+  const [fileNotice, setFileNotice] = useState<string | null>(null);
   const [mailTo, setMailTo] = useState("");
   const [mailSubject, setMailSubject] = useState("");
   const [mailBody, setMailBody] = useState("");
@@ -261,13 +262,22 @@ const RoomView = ({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const f = e.target.files?.[0] ?? null;
       setFileToSend(f);
+      setFileNotice(null);
     },
     []
   );
 
-  const handleSendFile = useCallback(() => {
+  const handleSendFile = useCallback(async () => {
     if (!fileToSend) return;
-    void onSendFile(fileToSend);
+    setFileNotice(null);
+    try {
+      await onSendFile(fileToSend);
+      setFileToSend(null);
+      setFileNotice("Sent");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to send file";
+      setFileNotice(message);
+    }
   }, [fileToSend, onSendFile]);
 
   const handleSendEmail = useCallback(async () => {
@@ -732,6 +742,15 @@ const RoomView = ({
                 {(fileToSend.size / 1024 / 1024).toFixed(2)} MB)
               </div>
               <Progress value={uploadProgress} />
+            </div>
+          )}
+          {fileNotice && (
+            <div
+              className={`mt-2 text-xs ${
+                fileNotice === "Sent" ? "text-muted-foreground" : "text-destructive"
+              }`}
+            >
+              {fileNotice}
             </div>
           )}
         </div>
